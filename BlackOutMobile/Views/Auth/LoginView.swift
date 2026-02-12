@@ -104,7 +104,7 @@ struct LoginView: View {
                         // Demo Data Button (for development)
                         Button {
                             DataStore.shared.seedDemoData()
-                            DataStore.shared.login(email: "alice@demo.com", password: "")
+                            DataStore.shared.login(email: "alice@demo.com", password: "password")
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "play.fill")

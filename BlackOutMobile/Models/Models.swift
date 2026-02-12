@@ -5,15 +5,23 @@ import Foundation
 struct User: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
+    var username: String
     var email: String
     var avatarUrl: String?
+    /// Local profile photo (in-memory); not persisted to backend.
+    var avatarImageData: Data?
+    /// Stored for profile edit verification and login (demo only; use hashing in production).
+    var password: String?
     let createdAt: Date
 
-    init(id: UUID = UUID(), name: String, email: String, avatarUrl: String? = nil, createdAt: Date = Date()) {
+    init(id: UUID = UUID(), name: String, username: String, email: String, avatarUrl: String? = nil, avatarImageData: Data? = nil, password: String? = nil, createdAt: Date = Date()) {
         self.id = id
         self.name = name
+        self.username = username
         self.email = email
         self.avatarUrl = avatarUrl
+        self.avatarImageData = avatarImageData
+        self.password = password
         self.createdAt = createdAt
     }
 }

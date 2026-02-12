@@ -4,79 +4,72 @@ struct GroupsListView: View {
     @StateObject private var viewModel = GroupsViewModel()
     @ObservedObject private var store = DataStore.shared
     @State private var showNotifications = false
+    @State private var showProfile = false
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.cardBlack.ignoresSafeArea()
+            groupsContent
+                .navigationTitle("My Groups")
+                .navigationBarTitleDisplayMode(.large)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .toolbar { toolbarContent }
+                .sheet(isPresented: $showProfile) { ProfileView() }
+                .sheet(isPresented: $viewModel.showCreateGroup) { CreateGroupView(viewModel: viewModel) }
+                .sheet(isPresented: $showNotifications) { NotificationsListView() }
+                .onAppear { viewModel.loadGroups() }
+                .onChange(of: store.groups.count) { viewModel.loadGroups() }
+                .onChange(of: store.memberships) { _, _ in viewModel.loadGroups() }
+        }
+    }
 
-                if viewModel.groups.isEmpty {
-                    emptyStateView
-                } else {
-                    groupsList
-                }
+    @ViewBuilder
+    private var groupsContent: some View {
+        ZStack {
+            Color.cardBlack.ignoresSafeArea()
+            if viewModel.groups.isEmpty {
+                emptyStateView
+            } else {
+                groupsList
             }
-            .navigationTitle("My Groups")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showNotifications = true
-                    } label: {
-                        ZStack(alignment: .topTrailing) {
-                            Image(systemName: "bell.fill")
-                                .foregroundColor(.white)
-                            if viewModel.unreadCount() > 0 {
-                                Text("\(viewModel.unreadCount())")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.white)
-                                    .padding(4)
-                                    .background(Color.dangerRed)
-                                    .clipShape(Circle())
-                                    .offset(x: 8, y: -8)
-                            }
-                        }
-                    }
-                }
+        }
+    }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        viewModel.showCreateGroup = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .foregroundColor(.accentPurple)
-                            .font(.title3)
-                    }
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button(role: .destructive) {
-                            store.logout()
-                        } label: {
-                            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                        }
-                    } label: {
-                        Image(systemName: "person.circle")
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button { showNotifications = true } label: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "bell.fill").foregroundColor(.white)
+                    if viewModel.unreadCount() > 0 {
+                        Text("\(viewModel.unreadCount())")
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.white)
+                            .padding(4)
+                            .background(Color.dangerRed)
+                            .clipShape(Circle())
+                            .offset(x: 8, y: -8)
                     }
                 }
             }
-            .sheet(isPresented: $viewModel.showCreateGroup) {
-                CreateGroupView(viewModel: viewModel)
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { viewModel.showCreateGroup = true } label: {
+                Image(systemName: "plus.circle.fill")
+                    .foregroundColor(.accentPurple)
+                    .font(.title3)
             }
-            .sheet(isPresented: $showNotifications) {
-                NotificationsListView()
-            }
-            .onAppear {
-                viewModel.loadGroups()
-            }
-            .onChange(of: store.groups.count) {
-                viewModel.loadGroups()
-            }
-            .onChange(of: store.memberships) { _, _ in
-                viewModel.loadGroups()
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button { showProfile = true } label: {
+                    Label("Profile", systemImage: "person.crop.circle")
+                }
+                Divider()
+                Button(role: .destructive) { store.logout() } label: {
+                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+            } label: {
+                Image(systemName: "person.circle").foregroundColor(.white)
             }
         }
     }

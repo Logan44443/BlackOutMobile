@@ -128,7 +128,7 @@ struct BlackoutButtonStyle: ButtonStyle {
                     .shadow(color: color.opacity(0.4), radius: configuration.isPressed ? 2 : 6)
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+            .animation(Animation.easeInOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 
@@ -144,6 +144,6 @@ struct SecondaryButtonStyle: ButtonStyle {
                     .stroke(Color.accentPurple, lineWidth: 1.5)
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+            .animation(Animation.easeInOut(duration: 0.15), value: configuration.isPressed)
     }
 }

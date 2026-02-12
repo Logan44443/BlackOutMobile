@@ -43,6 +43,20 @@ struct SignUpView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
+                            Text("Username")
+                                .font(.caption)
+                                .foregroundColor(.textSecondary)
+                            TextField("", text: $viewModel.username)
+                                .textFieldStyle(.plain)
+                                .textContentType(.username)
+                                .autocapitalization(.none)
+                                .padding()
+                                .background(Color.surfaceMedium)
+                                .cornerRadius(12)
+                                .foregroundColor(.white)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("Email")
                                 .font(.caption)
                                 .foregroundColor(.textSecondary)

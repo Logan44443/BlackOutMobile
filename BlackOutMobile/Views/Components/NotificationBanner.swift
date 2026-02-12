@@ -95,7 +95,7 @@ struct BannerOverlay: ViewModifier {
                         }
                     }
                     .transition(.move(edge: .top).combined(with: .opacity))
-                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: store.bannerNotification?.id)
+                    .animation(Animation.spring(response: 0.4, dampingFraction: 0.8), value: store.bannerNotification?.id)
                     .padding(.top, 8)
                     .zIndex(100)
                 }

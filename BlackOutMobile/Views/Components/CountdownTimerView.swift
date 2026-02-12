@@ -9,7 +9,7 @@ struct CountdownTimerView: View {
     @State private var timerCancellable: AnyCancellable?
 
     var body: some View {
-        Group {
+        SwiftUI.Group {
             if compact {
                 compactView
             } else {

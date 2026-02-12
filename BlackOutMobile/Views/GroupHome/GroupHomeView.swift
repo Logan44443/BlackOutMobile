@@ -5,6 +5,8 @@ struct GroupHomeView: View {
     @StateObject private var viewModel: GroupHomeViewModel
     @State private var showAdminSettings = false
     @State private var showPetition = false
+    @State private var showAddMember = false
+    @State private var showInviteLinkCopied = false
     @State private var navigateToNight: Night?
 
     init(groupId: UUID) {
@@ -44,6 +46,12 @@ struct GroupHomeView: View {
                     // Members Section
                     membersSection
 
+                    // Add Members & Invite by Link (admin only)
+                    if viewModel.isAdmin {
+                        addMembersSection
+                        inviteByLinkSection
+                    }
+
                     // Night History
                     if !viewModel.nights.isEmpty {
                         nightHistorySection
@@ -73,6 +81,14 @@ struct GroupHomeView: View {
         }
         .sheet(isPresented: $showPetition) {
             PetitionRestoreView(groupId: groupId)
+        }
+        .sheet(isPresented: $showAddMember) {
+            AddMemberSheet(groupId: groupId, groupName: viewModel.group?.name ?? "Group")
+        }
+        .alert("Link Copied", isPresented: $showInviteLinkCopied) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Invite link copied to clipboard. Share it with friends so they can join the group.")
         }
         .navigationDestination(item: $navigateToNight) { night in
             NightView(nightId: night.id)
@@ -324,11 +340,65 @@ struct GroupHomeView: View {
         .cardStyle()
     }
 
+    // MARK: - Add Members Section
+
+    private var addMembersSection: some View {
+        Button {
+            showAddMember = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.badge.plus")
+                    .font(.title3)
+                    .foregroundColor(.accentPurple)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add Members")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                    Text("Search by name or email")
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundColor(.textSecondary)
+            }
+        }
+        .cardStyle()
+    }
+
+    // MARK: - Invite by Link Section
+
+    private var inviteByLinkSection: some View {
+        Button {
+            let urlString = "blackout://invite/\(groupId.uuidString)"
+            UIPasteboard.general.string = urlString
+            showInviteLinkCopied = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "link")
+                    .font(.title3)
+                    .foregroundColor(.accentPurple)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Invite by Link")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                    Text("Copy link to share with friends")
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "doc.on.doc")
+                    .foregroundColor(.textSecondary)
+            }
+        }
+        .cardStyle()
+    }
+
     // MARK: - Night History
 
     private var nightHistorySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Night History", systemImage: "clock.fill")
+            Label("History", systemImage: "clock.fill")
                 .font(.headline)
                 .foregroundColor(.white)
 

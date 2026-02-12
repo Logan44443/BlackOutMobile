@@ -34,12 +34,14 @@ class DataStore: ObservableObject {
     // MARK: - Auth
 
     @discardableResult
-    func signUp(name: String, email: String, password: String) -> Bool {
+    func signUp(name: String, username: String, email: String, password: String) -> Bool {
         let trimmedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
-        guard !trimmedEmail.isEmpty, !name.isEmpty else { return false }
+        let trimmedUsername = username.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !trimmedEmail.isEmpty, !name.isEmpty, !trimmedUsername.isEmpty else { return false }
         guard !users.contains(where: { $0.email.lowercased() == trimmedEmail }) else { return false }
+        guard !users.contains(where: { $0.username.lowercased() == trimmedUsername }) else { return false }
 
-        let user = User(name: name, email: trimmedEmail)
+        let user = User(name: name, username: trimmedUsername, email: trimmedEmail, password: password)
         users.append(user)
         currentUser = user
         isAuthenticated = true
@@ -50,6 +52,7 @@ class DataStore: ObservableObject {
     func login(email: String, password: String) -> Bool {
         let trimmedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
         guard let user = users.first(where: { $0.email.lowercased() == trimmedEmail }) else { return false }
+        if let storedPassword = user.password, storedPassword != password { return false }
         currentUser = user
         isAuthenticated = true
         return true
@@ -58,6 +61,49 @@ class DataStore: ObservableObject {
     func logout() {
         currentUser = nil
         isAuthenticated = false
+    }
+
+    /// Update current user's profile. Pass currentPassword to change email or password; must match stored password.
+    @discardableResult
+    func updateProfile(avatarImageData: Data?, name: String?, username: String?, email: String?, newPassword: String?, currentPassword: String?) -> (success: Bool, error: String?) {
+        guard let user = currentUser, let idx = users.firstIndex(where: { $0.id == user.id }) else {
+            return (false, "Not signed in.")
+        }
+        if let n = name, !n.trimmingCharacters(in: .whitespaces).isEmpty {
+            users[idx].name = n.trimmingCharacters(in: .whitespaces)
+        }
+        if username != nil {
+            let trimmed = username!.trimmingCharacters(in: .whitespaces).lowercased()
+            guard !trimmed.isEmpty else { return (false, "Username cannot be empty.") }
+            if users.contains(where: { $0.username.lowercased() == trimmed && $0.id != user.id }) {
+                return (false, "That username is already taken.")
+            }
+            users[idx].username = trimmed
+        }
+        if email != nil {
+            let trimmed = email!.lowercased().trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return (false, "Email cannot be empty.") }
+            guard let cp = currentPassword, cp == users[idx].password else {
+                return (false, "Enter your current password to change email.")
+            }
+            if users.contains(where: { $0.email.lowercased() == trimmed && $0.id != user.id }) {
+                return (false, "That email is already in use.")
+            }
+            users[idx].email = trimmed
+        }
+        if let newPass = newPassword {
+            guard !newPass.isEmpty else { return (false, "New password cannot be empty.") }
+            guard newPass.count >= 6 else { return (false, "New password must be at least 6 characters.") }
+            guard let cp = currentPassword, cp == users[idx].password else {
+                return (false, "Enter your current password to change password.")
+            }
+            users[idx].password = newPass
+        }
+        if let data = avatarImageData {
+            users[idx].avatarImageData = data
+        }
+        currentUser = users[idx]
+        return (true, nil)
     }
 
     // MARK: - Groups
@@ -150,6 +196,12 @@ class DataStore: ObservableObject {
         )
         memberships.append(membership)
         return true
+    }
+
+    /// Users who are not yet members of the group (for "Add member" search).
+    func usersNotInGroup(_ groupId: UUID) -> [User] {
+        let memberUserIds = Set(memberships.filter { $0.groupId == groupId }.map(\.userId))
+        return users.filter { !memberUserIds.contains($0.id) }
     }
 
     // MARK: - Nights
@@ -547,10 +599,10 @@ class DataStore: ObservableObject {
     // MARK: - Seed Demo Data (for development/testing)
 
     func seedDemoData() {
-        let alice = User(name: "Alice Johnson", email: "alice@demo.com")
-        let bob = User(name: "Bob Smith", email: "bob@demo.com")
-        let charlie = User(name: "Charlie Davis", email: "charlie@demo.com")
-        let diana = User(name: "Diana Lee", email: "diana@demo.com")
+        let alice = User(name: "Alice Johnson", username: "alice", email: "alice@demo.com", password: "password")
+        let bob = User(name: "Bob Smith", username: "bob", email: "bob@demo.com", password: "password")
+        let charlie = User(name: "Charlie Davis", username: "charlie", email: "charlie@demo.com", password: "password")
+        let diana = User(name: "Diana Lee", username: "diana", email: "diana@demo.com", password: "password")
         users = [alice, bob, charlie, diana]
 
         let group1 = Group(name: "Weekend Crew", createdByUserId: alice.id, cardsPerPeriod: 2)
