@@ -22,6 +22,10 @@ class AuthViewModel: ObservableObject {
             errorMessage = "Please enter your email"
             return
         }
+        guard isValidEmail(email) else {
+            errorMessage = "Please enter a valid email address (must contain @)"
+            return
+        }
         guard !password.isEmpty else {
             errorMessage = "Please enter your password"
             return
@@ -55,6 +59,10 @@ class AuthViewModel: ObservableObject {
             errorMessage = "Please enter your email"
             return
         }
+        guard isValidEmail(email) else {
+            errorMessage = "Please enter a valid email address (must contain @)"
+            return
+        }
         guard !password.isEmpty else {
             errorMessage = "Please enter a password"
             return
@@ -82,5 +90,13 @@ class AuthViewModel: ObservableObject {
         name = ""
         username = ""
         errorMessage = nil
+    }
+
+    /// Email must contain @ for verification codes and valid format.
+    private func isValidEmail(_ email: String) -> Bool {
+        let trimmed = email.trimmingCharacters(in: .whitespaces)
+        guard trimmed.contains("@") else { return false }
+        let parts = trimmed.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count == 2 && !parts[0].isEmpty && !parts[1].isEmpty
     }
 }

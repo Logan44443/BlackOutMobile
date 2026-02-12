@@ -83,6 +83,9 @@ class DataStore: ObservableObject {
         if email != nil {
             let trimmed = email!.lowercased().trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty else { return (false, "Email cannot be empty.") }
+            guard trimmed.contains("@"), trimmed.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false).count == 2 else {
+                return (false, "Please enter a valid email address (must contain @).")
+            }
             guard let cp = currentPassword, cp == users[idx].password else {
                 return (false, "Enter your current password to change email.")
             }

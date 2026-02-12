@@ -8,6 +8,8 @@ struct GroupHomeView: View {
     @State private var showAddMember = false
     @State private var showInviteLinkCopied = false
     @State private var navigateToNight: Night?
+    @State private var pullCardDragOffset: CGFloat = 0
+    private let pullCardDragThreshold: CGFloat = 160
 
     init(groupId: UUID) {
         self.groupId = groupId
@@ -26,11 +28,6 @@ struct GroupHomeView: View {
                     // Active Night Banner
                     if let activeNight = viewModel.activeNight {
                         activeNightBanner(activeNight)
-                    }
-
-                    // Pull Card Section
-                    if viewModel.canPullCard {
-                        pullCardSection
                     }
 
                     // Petition Section
@@ -58,8 +55,21 @@ struct GroupHomeView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 32)
+                .padding(.bottom, viewModel.canPullCard ? 140 : 32)
             }
+
+            // Half-card at bottom: drag up to pull (only when can pull)
+            if viewModel.canPullCard {
+                pullCardHalfPeek
+            }
+        }
+        .alert("Pull Blackout Card?", isPresented: $viewModel.showPullConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Pull Card") {
+                viewModel.pullCard()
+            }
+        } message: {
+            Text("This will notify everyone in the group. You're committing to a night out. Are you sure?")
         }
         .navigationTitle(viewModel.group?.name ?? "Group")
         .navigationBarTitleDisplayMode(.large)
@@ -174,47 +184,63 @@ struct GroupHomeView: View {
         .glowingCardStyle(color: .accentPurple)
     }
 
-    // MARK: - Pull Card Section
+    // MARK: - Pull Card (full-height from bottom; logo + "Pull to black out" at rest; pulls up to members area)
 
-    private var pullCardSection: some View {
-        VStack(spacing: 12) {
-            // Visual card
-            ZStack {
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentPurple, Color.accentPurple.opacity(0.6)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+    private let pullCardPeekHeight: CGFloat = 120
+
+    private var pullCardHalfPeek: some View {
+        GeometryReader { geometry in
+            let maxPullHeight = geometry.size.height * 0.55
+            let cardHeight = pullCardPeekHeight + min(pullCardDragOffset, maxPullHeight)
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                ZStack(alignment: .bottom) {
+                    RoundedRectangle(cornerRadius: 24)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.accentPurple.opacity(0.98), Color.accentPurple.opacity(0.85)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         )
-                    )
-                    .frame(height: 120)
-                    .shadow(color: .accentPurple.opacity(0.4), radius: 16)
+                        .frame(height: cardHeight)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24)
+                                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
 
-                VStack(spacing: 8) {
-                    Image(systemName: "suit.spade.fill")
-                        .font(.title)
-                        .foregroundColor(.white)
-                    Text("BLACKOUT CARD")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                    Text("Tap to pull your card tonight")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.8))
+                    VStack(spacing: 10) {
+                        Image(systemName: "suit.spade.fill")
+                            .font(.system(size: 56))
+                            .foregroundColor(.black)
+                        Text("Pull to black out")
+                            .font(.subheadline.bold())
+                            .foregroundColor(.white.opacity(0.95))
+                    }
+                    .padding(.bottom, 44)
                 }
-            }
-            .onTapGesture {
-                viewModel.showPullConfirmation = true
+                .frame(height: cardHeight)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in
+                            let up = -value.translation.height
+                            pullCardDragOffset = min(max(up, 0), maxPullHeight)
+                        }
+                        .onEnded { value in
+                            let up = -value.translation.height
+                            if up >= pullCardDragThreshold {
+                                viewModel.showPullConfirmation = true
+                            }
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                pullCardDragOffset = 0
+                            }
+                        }
+                )
             }
         }
-        .alert("Pull Blackout Card?", isPresented: $viewModel.showPullConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Pull Card") {
-                viewModel.pullCard()
-            }
-        } message: {
-            Text("This will notify everyone in the group. You're committing to a night out. Are you sure?")
-        }
+        .allowsHitTesting(true)
     }
 
     // MARK: - Petition Section
