@@ -267,6 +267,34 @@ struct MediaPostView: View {
                     .frame(maxHeight: 300)
                     .clipped()
                     .cornerRadius(12)
+            } else if item.mediaType == .image, let urlString = item.url, let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .empty:
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.surfaceMedium)
+                            .frame(height: 240)
+                            .overlay(ProgressView().tint(.accentPurple))
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(maxWidth: .infinity)
+                            .frame(maxHeight: 300)
+                            .clipped()
+                            .cornerRadius(12)
+                    case .failure:
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.surfaceMedium)
+                            .frame(height: 240)
+                            .overlay(
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.textSecondary)
+                            )
+                    @unknown default:
+                        EmptyView()
+                    }
+                }
             } else if item.mediaType == .video {
                 ZStack {
                     RoundedRectangle(cornerRadius: 12)

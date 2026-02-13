@@ -5,22 +5,14 @@ struct AddMemberSheet: View {
     let groupName: String
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
+    @State private var results: [User] = []
+    @State private var isLoading = false
     @State private var addedUserIds: Set<UUID> = []
     @State private var errorMessage: String?
     @FocusState private var isSearchFocused: Bool
+    @State private var searchTask: Task<Void, Never>?
 
     private let store = DataStore.shared
-
-    private var availableUsers: [User] {
-        let pool = store.usersNotInGroup(groupId)
-        if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
-            return pool
-        }
-        let query = searchText.lowercased().trimmingCharacters(in: .whitespaces)
-        return pool.filter {
-            $0.name.lowercased().contains(query) || $0.email.lowercased().contains(query)
-        }
-    }
 
     var body: some View {
         NavigationStack {
@@ -32,7 +24,7 @@ struct AddMemberSheet: View {
                     HStack(spacing: 12) {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.textSecondary)
-                        TextField("Search by name or email", text: $searchText)
+                        TextField("Search by name or username", text: $searchText)
                             .textFieldStyle(.plain)
                             .foregroundColor(.white)
                             .focused($isSearchFocused)
@@ -43,6 +35,9 @@ struct AddMemberSheet: View {
                     .cornerRadius(12)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
+                    .onChange(of: searchText) { _, newValue in
+                        performSearch(newValue)
+                    }
 
                     if let error = errorMessage {
                         Text(error)
@@ -53,12 +48,22 @@ struct AddMemberSheet: View {
                             .padding(.top, 8)
                     }
 
-                    if availableUsers.isEmpty {
+                    if isLoading {
+                        VStack(spacing: 12) {
+                            Spacer().frame(height: 40)
+                            ProgressView()
+                                .tint(.accentPurple)
+                            Text("Searching…")
+                                .font(.subheadline)
+                                .foregroundColor(.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else if results.isEmpty {
                         emptyState
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 0) {
-                                ForEach(availableUsers) { user in
+                                ForEach(results) { user in
                                     addMemberRow(user: user)
                                 }
                             }
@@ -77,6 +82,9 @@ struct AddMemberSheet: View {
                         .foregroundColor(.accentPurple)
                 }
             }
+            .onAppear {
+                isSearchFocused = true
+            }
         }
     }
 
@@ -85,12 +93,14 @@ struct AddMemberSheet: View {
 
         return Button {
             guard !alreadyAdded else { return }
-            let success = store.addMemberToGroup(groupId: groupId, userId: user.id)
-            if success {
-                addedUserIds.insert(user.id)
-                errorMessage = nil
-            } else {
-                errorMessage = "Could not add \(user.name)."
+            Task {
+                let success = await store.addMemberToGroup(groupId: groupId, userId: user.id)
+                if success {
+                    addedUserIds.insert(user.id)
+                    errorMessage = nil
+                } else {
+                    errorMessage = "Could not add \(user.name)."
+                }
             }
         } label: {
             HStack(spacing: 12) {
@@ -107,7 +117,7 @@ struct AddMemberSheet: View {
                     Text(user.name)
                         .font(.subheadline.bold())
                         .foregroundColor(.white)
-                    Text(user.email)
+                    Text("@\(user.username)")
                         .font(.caption)
                         .foregroundColor(.textSecondary)
                 }
@@ -137,11 +147,11 @@ struct AddMemberSheet: View {
             Image(systemName: "person.2.slash")
                 .font(.system(size: 48))
                 .foregroundColor(.surfaceMedium)
-            Text("No one to add")
+            Text(searchText.trimmingCharacters(in: .whitespaces).isEmpty ? "Search for someone" : "No results")
                 .font(.headline)
                 .foregroundColor(.white)
             Text(searchText.isEmpty
-                 ? "Everyone in the app is already in this group."
+                 ? "Type a name or username to add someone."
                  : "No one matches \"\(searchText)\"."
             )
             .font(.subheadline)
@@ -149,5 +159,27 @@ struct AddMemberSheet: View {
             .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func performSearch(_ text: String) {
+        searchTask?.cancel()
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            results = []
+            isLoading = false
+            return
+        }
+
+        searchTask = Task {
+            // lightweight debounce
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+
+            isLoading = true
+            let found = await store.searchProfilesNotInGroup(groupId: groupId, query: trimmed)
+            guard !Task.isCancelled else { return }
+            results = found
+            isLoading = false
+        }
     }
 }

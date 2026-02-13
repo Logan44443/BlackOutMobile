@@ -106,8 +106,12 @@ struct InviteAcceptView: View {
     }
 
     private func accept() {
-        guard store.joinGroup(groupId: groupId) else { return }
-        didJoin = true
+        Task {
+            let ok = await store.joinGroup(groupId: groupId)
+            if ok {
+                didJoin = true
+            }
+        }
     }
 
     private func decline() {

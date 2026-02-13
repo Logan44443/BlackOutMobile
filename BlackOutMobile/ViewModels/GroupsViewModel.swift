@@ -25,19 +25,28 @@ class GroupsViewModel: ObservableObject {
             return
         }
 
-        let result = store.createGroup(name: newGroupName.trimmingCharacters(in: .whitespaces))
-        if result != nil {
-            newGroupName = ""
-            showCreateGroup = false
-            loadGroups()
-        } else {
-            errorMessage = "Failed to create group"
+        let name = newGroupName.trimmingCharacters(in: .whitespaces)
+        isLoading = true
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.store.createGroup(name: name)
+            self.isLoading = false
+            if result != nil {
+                self.newGroupName = ""
+                self.showCreateGroup = false
+                self.loadGroups()
+            } else {
+                self.errorMessage = "Failed to create group"
+            }
         }
     }
 
     func deleteGroup(_ groupInfo: GroupInfo) {
-        store.leaveGroup(groupId: groupInfo.group.id)
-        loadGroups()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.store.leaveGroup(groupId: groupInfo.group.id)
+            self.loadGroups()
+        }
     }
 
     func unreadCount() -> Int {

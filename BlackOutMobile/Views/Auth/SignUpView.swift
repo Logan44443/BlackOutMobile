@@ -140,5 +140,13 @@ struct SignUpView: View {
                 }
             }
         }
+        .alert("Verify Your Email", isPresented: $viewModel.showEmailVerificationAlert) {
+            Button("OK") {
+                viewModel.attemptAutoLoginAfterVerification()
+                dismiss()
+            }
+        } message: {
+            Text("We sent a verification link to \(viewModel.email). Please check your inbox and verify your email, then sign in.")
+        }
     }
 }

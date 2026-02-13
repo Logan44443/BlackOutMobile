@@ -34,13 +34,21 @@ struct ProfileView: View {
                                         .scaledToFill()
                                         .frame(width: 100, height: 100)
                                         .clipShape(Circle())
+                                } else if let urlString = user?.avatarUrl, let url = URL(string: urlString) {
+                                    AsyncImage(url: url) { phase in
+                                        switch phase {
+                                        case .success(let image):
+                                            image
+                                                .resizable()
+                                                .scaledToFill()
+                                                .frame(width: 100, height: 100)
+                                                .clipShape(Circle())
+                                        default:
+                                            avatarPlaceholder
+                                        }
+                                    }
                                 } else {
-                                    Circle()
-                                        .fill(Color.surfaceDark)
-                                        .frame(width: 100, height: 100)
-                                    Text(String((user?.name ?? "?").prefix(1)).uppercased())
-                                        .font(.system(size: 40, weight: .bold))
-                                        .foregroundColor(.accentPurple)
+                                    avatarPlaceholder
                                 }
                                 Circle()
                                     .stroke(Color.accentPurple.opacity(0.5), lineWidth: 2)
@@ -144,6 +152,17 @@ struct ProfileView: View {
         }
     }
 
+    private var avatarPlaceholder: some View {
+        ZStack {
+            Circle()
+                .fill(Color.surfaceDark)
+                .frame(width: 100, height: 100)
+            Text(String((user?.name ?? "?").prefix(1)).uppercased())
+                .font(.system(size: 40, weight: .bold))
+                .foregroundColor(.accentPurple)
+        }
+    }
+
     private func profileField(_ label: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
@@ -193,26 +212,27 @@ struct ProfileView: View {
         }
 
         isLoading = true
+        Task {
+            let result = await store.updateProfile(
+                avatarImageData: avatarImageData,
+                name: name,
+                username: username,
+                email: emailChanged ? email : nil,
+                newPassword: passwordChanged ? newPassword : nil,
+                currentPassword: (emailChanged || passwordChanged) ? currentPassword : nil
+            )
 
-        let result = store.updateProfile(
-            avatarImageData: avatarImageData,
-            name: name,
-            username: username,
-            email: emailChanged ? email : nil,
-            newPassword: passwordChanged ? newPassword : nil,
-            currentPassword: (emailChanged || passwordChanged) ? currentPassword : nil
-        )
+            isLoading = false
 
-        isLoading = false
-
-        if result.success {
-            successMessage = "Profile updated."
-            currentPassword = ""
-            newPassword = ""
-            confirmPassword = ""
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { successMessage = nil }
-        } else {
-            errorMessage = result.error
+            if result.success {
+                successMessage = "Profile updated."
+                currentPassword = ""
+                newPassword = ""
+                confirmPassword = ""
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { successMessage = nil }
+            } else {
+                errorMessage = result.error
+            }
         }
     }
 }

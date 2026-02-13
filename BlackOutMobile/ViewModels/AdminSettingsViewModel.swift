@@ -31,21 +31,27 @@ class AdminSettingsViewModel: ObservableObject {
     }
 
     func saveSettings() {
-        store.updateGroupSettings(
-            groupId: groupId,
-            cardsPerPeriod: cardsPerPeriod,
-            periodType: periodType,
-            periodStart: periodStart,
-            periodEnd: periodEnd
-        )
-        saveSuccessful = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.saveSuccessful = false
+        Task { [weak self] in
+            guard let self else { return }
+            await self.store.updateGroupSettings(
+                groupId: self.groupId,
+                cardsPerPeriod: self.cardsPerPeriod,
+                periodType: self.periodType,
+                periodStart: self.periodStart,
+                periodEnd: self.periodEnd
+            )
+            self.saveSuccessful = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.saveSuccessful = false
+            }
         }
     }
 
     func resetPeriod() {
-        store.resetPeriod(groupId: groupId)
-        showResetConfirmation = false
+        Task { [weak self] in
+            guard let self else { return }
+            await self.store.resetPeriod(groupId: self.groupId)
+            self.showResetConfirmation = false
+        }
     }
 }

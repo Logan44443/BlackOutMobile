@@ -101,19 +101,7 @@ struct LoginView: View {
                             .font(.subheadline)
                         }
 
-                        // Demo Data Button (for development)
-                        Button {
-                            DataStore.shared.seedDemoData()
-                            DataStore.shared.login(email: "alice@demo.com", password: "password")
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "play.fill")
-                                Text("Load Demo Data")
-                            }
-                            .font(.caption)
-                            .foregroundColor(.textSecondary)
-                            .padding(.top, 8)
-                        }
+                        // Supabase-backed build: demo seeding removed
                     }
                     .padding(.horizontal, 24)
                     .padding(.bottom, 40)

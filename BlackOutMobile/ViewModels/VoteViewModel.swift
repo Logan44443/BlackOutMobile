@@ -62,8 +62,10 @@ class VoteViewModel: ObservableObject {
     }
 
     func castVote(value: VoteValue) {
-        store.castVote(voteCaseId: voteCaseId, value: value)
-        loadData()
+        Task {
+            _ = await store.castVote(voteCaseId: voteCaseId, value: value)
+            loadData()
+        }
     }
 
     private func startCountdown() {

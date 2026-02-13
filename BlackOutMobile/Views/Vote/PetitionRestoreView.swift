@@ -88,10 +88,12 @@ struct PetitionRestoreView: View {
             .alert("Submit Petition?", isPresented: $showConfirmation) {
                 Button("Cancel", role: .cancel) {}
                 Button("Submit") {
-                    let result = store.startPetition(groupId: groupId)
-                    if result != nil {
-                        withAnimation {
-                            submitted = true
+                    Task {
+                        let result = await store.startPetition(groupId: groupId)
+                        if result != nil {
+                            withAnimation {
+                                submitted = true
+                            }
                         }
                     }
                 }

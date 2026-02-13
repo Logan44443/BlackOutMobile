@@ -17,7 +17,7 @@ struct NotificationsListView: View {
                     ScrollView {
                         LazyVStack(spacing: 8) {
                             ForEach(notifications) { notification in
-                                NotificationRow(notification: notification) {
+                                NotificationRowView(notification: notification) {
                                     store.markNotificationRead(notification.id)
                                 }
                             }
@@ -63,7 +63,7 @@ struct NotificationsListView: View {
 
 // MARK: - Notification Row
 
-struct NotificationRow: View {
+struct NotificationRowView: View {
     let notification: AppNotification
     let onTap: () -> Void
 

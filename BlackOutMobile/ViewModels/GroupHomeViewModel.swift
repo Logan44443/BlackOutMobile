@@ -25,6 +25,10 @@ class GroupHomeViewModel: ObservableObject {
         self.groupId = groupId
         observeStore()
         loadData()
+        Task {
+            await store.refreshGroupData(groupId: groupId)
+            await store.refreshNotificationsForCurrentUser()
+        }
     }
 
     private func observeStore() {
@@ -49,22 +53,26 @@ class GroupHomeViewModel: ObservableObject {
         canPullCard = (currentMembership?.cardsRemaining ?? 0) > 0 && activeNight == nil
         canPetition = store.canPetition(groupId: groupId)
 
-        // Also check/resolve expired votes
+        // Also check/resolve expired votes (server-side)
         store.resolveExpiredVoteCases()
     }
 
     func pullCard() {
-        let result = store.pullCard(in: groupId)
-        if result == nil {
-            errorMessage = "Unable to pull card. You may not have cards remaining or there's an active night."
+        Task {
+            let result = await store.pullCard(in: groupId)
+            if result == nil {
+                errorMessage = "Unable to pull card. You may not have cards remaining or there's an active night."
+            }
+            loadData()
         }
-        loadData()
     }
 
     func closeNight() {
         guard let night = activeNight else { return }
-        store.closeNight(night.id)
-        loadData()
+        Task {
+            await store.closeNight(night.id)
+            loadData()
+        }
     }
 
     func pullerName(for night: Night) -> String {

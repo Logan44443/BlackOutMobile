@@ -65,7 +65,7 @@ struct GroupsListView: View {
                     Label("Profile", systemImage: "person.crop.circle")
                 }
                 Divider()
-                Button(role: .destructive) { store.logout() } label: {
+                Button(role: .destructive) { Task { await store.logout() } } label: {
                     Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
                 }
             } label: {

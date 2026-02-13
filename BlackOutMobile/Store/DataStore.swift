@@ -1,9 +1,9 @@
 import Foundation
 import Combine
 import SwiftUI
+import Supabase
 
-/// Central in-memory data store. Manages all app state and business logic.
-/// Designed to be replaced with a real backend/database layer later.
+/// Central app store. Currently backed by Supabase (Auth + Postgres).
 @MainActor
 class DataStore: ObservableObject {
     static let shared = DataStore()
@@ -26,127 +26,393 @@ class DataStore: ObservableObject {
     @Published var bannerNotification: AppNotification?
 
     private var timerCancellable: AnyCancellable?
+    private let supabase = SupabaseService.client
 
     private init() {
+        Task { await observeAuthState() }
         startVoteResolutionTimer()
     }
 
     // MARK: - Auth
 
+    enum SignUpResult { case loggedIn, needsEmailVerification, failed }
+
     @discardableResult
-    func signUp(name: String, username: String, email: String, password: String) -> Bool {
+    func signUp(name: String, username: String, email: String, password: String) async -> SignUpResult {
         let trimmedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
         let trimmedUsername = username.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !trimmedEmail.isEmpty, !name.isEmpty, !trimmedUsername.isEmpty else { return false }
-        guard !users.contains(where: { $0.email.lowercased() == trimmedEmail }) else { return false }
-        guard !users.contains(where: { $0.username.lowercased() == trimmedUsername }) else { return false }
+        guard !trimmedEmail.isEmpty, !name.isEmpty, !trimmedUsername.isEmpty else { return .failed }
 
-        let user = User(name: name, username: trimmedUsername, email: trimmedEmail, password: password)
-        users.append(user)
-        currentUser = user
-        isAuthenticated = true
-        return true
+        do {
+            // Store name/username in Auth metadata so trigger can create the profile row.
+            let metadata: [String: AnyJSON] = [
+                "name": .string(name),
+                "username": .string(trimmedUsername)
+            ]
+            let response = try await supabase.auth.signUp(
+                email: trimmedEmail,
+                password: password,
+                data: metadata
+            )
+
+            // If a session was returned, the user is logged in immediately (email confirmation disabled).
+            if response.session != nil {
+                return .loggedIn
+            }
+            // No session → email confirmation is required.
+            return .needsEmailVerification
+        } catch {
+            debugPrint("Supabase signUp error:", error)
+            return .failed
+        }
     }
 
     @discardableResult
-    func login(email: String, password: String) -> Bool {
+    func login(email: String, password: String) async -> Bool {
         let trimmedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
-        guard let user = users.first(where: { $0.email.lowercased() == trimmedEmail }) else { return false }
-        if let storedPassword = user.password, storedPassword != password { return false }
-        currentUser = user
-        isAuthenticated = true
-        return true
+        guard !trimmedEmail.isEmpty else { return false }
+        do {
+            _ = try await supabase.auth.signIn(email: trimmedEmail, password: password)
+            // Auth listener will populate `currentUser` + data.
+            return true
+        } catch {
+            debugPrint("Supabase login error:", error)
+            return false
+        }
     }
 
-    func logout() {
+    func logout() async {
+        do { try await supabase.auth.signOut() } catch { debugPrint("Supabase signOut error:", error) }
         currentUser = nil
         isAuthenticated = false
+        // Clear cached data
+        users = []
+        groups = []
+        memberships = []
+        nights = []
+        mediaItems = []
+        voteCases = []
+        votes = []
+        notifications = []
     }
 
     /// Update current user's profile. Pass currentPassword to change email or password; must match stored password.
     @discardableResult
-    func updateProfile(avatarImageData: Data?, name: String?, username: String?, email: String?, newPassword: String?, currentPassword: String?) -> (success: Bool, error: String?) {
-        guard let user = currentUser, let idx = users.firstIndex(where: { $0.id == user.id }) else {
-            return (false, "Not signed in.")
-        }
-        if let n = name, !n.trimmingCharacters(in: .whitespaces).isEmpty {
-            users[idx].name = n.trimmingCharacters(in: .whitespaces)
-        }
-        if username != nil {
-            let trimmed = username!.trimmingCharacters(in: .whitespaces).lowercased()
-            guard !trimmed.isEmpty else { return (false, "Username cannot be empty.") }
-            if users.contains(where: { $0.username.lowercased() == trimmed && $0.id != user.id }) {
-                return (false, "That username is already taken.")
+    func updateProfile(avatarImageData: Data?, name: String?, username: String?, email: String?, newPassword: String?, currentPassword: String?) async -> (success: Bool, error: String?) {
+        guard isAuthenticated else { return (false, "Not signed in.") }
+        do {
+            let currentAuthUser = try await supabase.auth.session.user
+
+            // Update Auth email/password if provided
+            if email != nil || newPassword != nil {
+                guard let cp = currentPassword, !cp.isEmpty else {
+                    return (false, "Enter your current password to change email or password.")
+                }
+                // Re-authenticate by signing in again (verifies current password)
+                _ = try await supabase.auth.signIn(email: currentAuthUser.email ?? "", password: cp)
             }
-            users[idx].username = trimmed
-        }
-        if email != nil {
-            let trimmed = email!.lowercased().trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { return (false, "Email cannot be empty.") }
-            guard trimmed.contains("@"), trimmed.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false).count == 2 else {
-                return (false, "Please enter a valid email address (must contain @).")
+
+            if let newEmail = email?.lowercased().trimmingCharacters(in: .whitespaces), !newEmail.isEmpty {
+                guard newEmail.contains("@"), newEmail.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false).count == 2 else {
+                    return (false, "Please enter a valid email address (must contain @).")
+                }
+                try await supabase.auth.update(user: UserAttributes(email: newEmail))
             }
-            guard let cp = currentPassword, cp == users[idx].password else {
-                return (false, "Enter your current password to change email.")
+
+            if let newPass = newPassword, !newPass.isEmpty {
+                guard newPass.count >= 6 else { return (false, "New password must be at least 6 characters.") }
+                try await supabase.auth.update(user: UserAttributes(password: newPass))
             }
-            if users.contains(where: { $0.email.lowercased() == trimmed && $0.id != user.id }) {
-                return (false, "That email is already in use.")
+
+            // Update profile row (name/username/avatar_url) in public.profiles
+            let nameVal = name?.trimmingCharacters(in: .whitespaces).isEmpty == false ? name?.trimmingCharacters(in: .whitespaces) : nil
+            let usernameVal = username?.trimmingCharacters(in: .whitespaces).lowercased().isEmpty == false ? username?.trimmingCharacters(in: .whitespaces).lowercased() : nil
+
+            // Upload avatar image to Supabase Storage if provided
+            var avatarUrlString: String?
+            var didUploadAvatar = false
+            if let imageData = avatarImageData {
+                let filePath = "avatars/\(currentAuthUser.id.uuidString).jpg"
+                // Upsert (overwrite existing) by uploading with upsert option
+                try await supabase.storage
+                    .from("avatars")
+                    .upload(
+                        filePath,
+                        data: imageData,
+                        options: FileOptions(contentType: "image/jpeg", upsert: true)
+                    )
+                avatarUrlString = storagePublicURL(bucket: "avatars", path: filePath)
+                didUploadAvatar = true
             }
-            users[idx].email = trimmed
-        }
-        if let newPass = newPassword {
-            guard !newPass.isEmpty else { return (false, "New password cannot be empty.") }
-            guard newPass.count >= 6 else { return (false, "New password must be at least 6 characters.") }
-            guard let cp = currentPassword, cp == users[idx].password else {
-                return (false, "Enter your current password to change password.")
+
+            let hasProfileChanges = nameVal != nil || usernameVal != nil || didUploadAvatar
+            if hasProfileChanges {
+                let payload = ProfileUpdate(
+                    name: nameVal,
+                    username: usernameVal,
+                    avatar_url: avatarUrlString,
+                    includeAvatar: didUploadAvatar
+                )
+                try await supabase
+                    .from("profiles")
+                    .update(payload)
+                    .eq("id", value: currentAuthUser.id)
+                    .execute()
             }
-            users[idx].password = newPass
+
+            // Refresh local cached profile
+            await refreshCurrentUserProfile()
+            return (true, nil)
+        } catch {
+            debugPrint("updateProfile error:", error)
+            return (false, "Unable to update profile. \(error.localizedDescription)")
         }
-        if let data = avatarImageData {
-            users[idx].avatarImageData = data
+    }
+
+    private func observeAuthState() async {
+        for await state in supabase.auth.authStateChanges {
+            if [.initialSession, .signedIn, .signedOut].contains(state.event) {
+                if state.session != nil {
+                    isAuthenticated = true
+                    await ensureProfileExists()
+                    await refreshCurrentUserProfile()
+                    await refreshGroupsForCurrentUser()
+                } else {
+                    currentUser = nil
+                    isAuthenticated = false
+                }
+            }
         }
-        currentUser = users[idx]
-        return (true, nil)
+    }
+
+    /// If the DB trigger didn't create a profiles row (e.g. it wasn't active at signup time),
+    /// create one now so foreign-key references to profiles(id) work.
+    private func ensureProfileExists() async {
+        do {
+            let authUser = try await supabase.auth.session.user
+
+            // Check if profile already exists
+            let existing: [ProfileRow] = try await supabase
+                .from("profiles")
+                .select()
+                .eq("id", value: authUser.id)
+                .limit(1)
+                .execute()
+                .value
+
+            if existing.isEmpty {
+                // Profile is missing — create it from auth metadata
+                let meta = authUser.userMetadata
+                let name = (meta["name"] as? String) ?? "User"
+                let username = (meta["username"] as? String)?.lowercased()
+                    ?? "user_\(authUser.id.uuidString.prefix(8).lowercased())"
+
+                _ = try await supabase
+                    .from("profiles")
+                    .insert(ProfileInsert(id: authUser.id, name: name, username: username))
+                    .execute()
+                debugPrint("ensureProfileExists: created missing profile for \(authUser.id)")
+            }
+        } catch {
+            debugPrint("ensureProfileExists error:", error)
+        }
+    }
+
+    private func refreshCurrentUserProfile() async {
+        do {
+            let authUser = try await supabase.auth.session.user
+            let profile: ProfileRow = try await supabase
+                .from("profiles")
+                .select()
+                .eq("id", value: authUser.id)
+                .single()
+                .execute()
+                .value
+
+            let user = User(
+                id: profile.id,
+                name: profile.name,
+                username: profile.username,
+                email: authUser.email ?? "",
+                avatarUrl: profile.avatarUrl
+            )
+            // cache profile list (at least current user)
+            if let idx = users.firstIndex(where: { $0.id == user.id }) {
+                users[idx] = user
+            } else {
+                users.append(user)
+            }
+            currentUser = user
+        } catch {
+            debugPrint("refreshCurrentUserProfile error:", error)
+        }
+    }
+
+    private func refreshGroupsForCurrentUser() async {
+        guard isAuthenticated else { return }
+        do {
+            let authUser = try await supabase.auth.session.user
+            let membershipRows: [MembershipRow] = try await supabase
+                .from("memberships")
+                .select()
+                .eq("user_id", value: authUser.id)
+                .execute()
+                .value
+
+            memberships = membershipRows.map { row in
+                Membership(
+                    id: row.id,
+                    groupId: row.groupId,
+                    userId: row.userId,
+                    role: row.role.lowercased() == "admin" ? .admin : .member,
+                    cardsRemaining: row.cardsRemaining,
+                    lastResetAt: row.lastResetAt,
+                    lastPetitionAt: row.lastPetitionAt
+                )
+            }
+
+            let groupIds = Array(Set(membershipRows.map(\.groupId)))
+            if groupIds.isEmpty {
+                groups = []
+                return
+            }
+
+            let groupRows: [GroupRow] = try await supabase
+                .from("groups")
+                .select()
+                .in("id", values: groupIds)
+                .execute()
+                .value
+
+            groups = groupRows.map { row in
+                Group(
+                    id: row.id,
+                    name: row.name,
+                    createdByUserId: row.createdByUserId,
+                    isPrivate: row.isPrivate,
+                    cardsPerPeriod: row.cardsPerPeriod,
+                    periodType: PeriodType(rawValue: row.periodType) ?? .month,
+                    periodStart: row.periodStart,
+                    periodEnd: row.periodEnd,
+                    nextResetAt: row.nextResetAt,
+                    voteThreshold: .majority,
+                    voteDurationHours: row.voteDurationHours,
+                    createdAt: row.createdAt
+                )
+            }
+        } catch {
+            debugPrint("refreshGroupsForCurrentUser error:", error)
+        }
     }
 
     // MARK: - Groups
 
     @discardableResult
-    func createGroup(name: String) -> Group? {
-        guard let user = currentUser, !name.isEmpty else { return nil }
+    func createGroup(name: String) async -> Group? {
+        guard isAuthenticated, !name.isEmpty else { return nil }
+        do {
+            let authUser = try await supabase.auth.session.user
 
-        let group = Group(name: name, createdByUserId: user.id)
-        groups.append(group)
+            // Insert the group. The SELECT policy allows the creator to read it back
+            // (created_by_user_id = auth.uid()), so .select().single() works.
+            let groupRow: GroupRow = try await supabase
+                .from("groups")
+                .insert(CreateGroupInsert(name: name, created_by_user_id: authUser.id))
+                .select()
+                .single()
+                .execute()
+                .value
 
-        let membership = Membership(
-            groupId: group.id,
-            userId: user.id,
-            role: .admin,
-            cardsRemaining: group.cardsPerPeriod
-        )
-        memberships.append(membership)
-        return group
+            // Add creator as Admin member.
+            _ = try await supabase
+                .from("memberships")
+                .insert(
+                    CreateMembershipInsert(
+                        group_id: groupRow.id,
+                        user_id: authUser.id,
+                        role: "Admin",
+                        cards_remaining: groupRow.cardsPerPeriod
+                    )
+                )
+                .execute()
+
+            await refreshGroupsForCurrentUser()
+            return group(for: groupRow.id)
+        } catch {
+            debugPrint("createGroup error:", error)
+            return nil
+        }
     }
 
     @discardableResult
-    func joinGroup(groupId: UUID) -> Bool {
-        guard let user = currentUser else { return false }
-        guard let group = groups.first(where: { $0.id == groupId }) else { return false }
-        guard !memberships.contains(where: { $0.groupId == groupId && $0.userId == user.id }) else { return false }
+    func joinGroup(groupId: UUID) async -> Bool {
+        guard isAuthenticated else { return false }
+        do {
+            let authUser = try await supabase.auth.session.user
 
-        let membership = Membership(
-            groupId: groupId,
-            userId: user.id,
-            role: .member,
-            cardsRemaining: group.cardsPerPeriod
-        )
-        memberships.append(membership)
-        return true
+            // Fetch group (for cardsPerPeriod) and cache it
+            let groupRow: GroupRow = try await supabase
+                .from("groups")
+                .select()
+                .eq("id", value: groupId)
+                .single()
+                .execute()
+                .value
+
+            if groups.first(where: { $0.id == groupRow.id }) == nil {
+                groups.append(
+                    Group(
+                        id: groupRow.id,
+                        name: groupRow.name,
+                        createdByUserId: groupRow.createdByUserId,
+                        isPrivate: groupRow.isPrivate,
+                        cardsPerPeriod: groupRow.cardsPerPeriod,
+                        periodType: PeriodType(rawValue: groupRow.periodType) ?? .month,
+                        periodStart: groupRow.periodStart,
+                        periodEnd: groupRow.periodEnd,
+                        nextResetAt: groupRow.nextResetAt,
+                        voteThreshold: .majority,
+                        voteDurationHours: groupRow.voteDurationHours,
+                        createdAt: groupRow.createdAt
+                    )
+                )
+            }
+
+            _ = try await supabase
+                .from("memberships")
+                .insert(
+                    CreateMembershipInsert(
+                        group_id: groupId,
+                        user_id: authUser.id,
+                        role: "Member",
+                        cards_remaining: groupRow.cardsPerPeriod
+                    )
+                )
+                .execute()
+
+            await refreshGroupsForCurrentUser()
+            await refreshGroupData(groupId: groupId)
+            return true
+        } catch {
+            debugPrint("joinGroup error:", error)
+            return false
+        }
     }
 
-    func leaveGroup(groupId: UUID) {
-        guard let user = currentUser else { return }
-        memberships.removeAll { $0.groupId == groupId && $0.userId == user.id }
+    func leaveGroup(groupId: UUID) async {
+        guard isAuthenticated else { return }
+        do {
+            let authUser = try await supabase.auth.session.user
+            _ = try await supabase
+                .from("memberships")
+                .delete()
+                .eq("group_id", value: groupId)
+                .eq("user_id", value: authUser.id)
+                .execute()
+            await refreshGroupsForCurrentUser()
+        } catch {
+            debugPrint("leaveGroup error:", error)
+        }
     }
 
     func groupsForCurrentUser() -> [GroupInfo] {
@@ -188,23 +454,62 @@ class DataStore: ObservableObject {
     }
 
     @discardableResult
-    func addMemberToGroup(groupId: UUID, userId: UUID) -> Bool {
+    func addMemberToGroup(groupId: UUID, userId: UUID) async -> Bool {
+        guard isAuthenticated else { return false }
         guard let group = groups.first(where: { $0.id == groupId }) else { return false }
-        guard !memberships.contains(where: { $0.groupId == groupId && $0.userId == userId }) else { return false }
-
-        let membership = Membership(
-            groupId: groupId,
-            userId: userId,
-            cardsRemaining: group.cardsPerPeriod
-        )
-        memberships.append(membership)
-        return true
+        do {
+            _ = try await supabase
+                .from("memberships")
+                .insert(
+                    CreateMembershipInsert(
+                        group_id: groupId,
+                        user_id: userId,
+                        role: "Member",
+                        cards_remaining: group.cardsPerPeriod
+                    )
+                )
+                .execute()
+            await refreshGroupsForCurrentUser()
+            await refreshGroupData(groupId: groupId)
+            return true
+        } catch {
+            debugPrint("addMemberToGroup error:", error)
+            return false
+        }
     }
 
-    /// Users who are not yet members of the group (for "Add member" search).
-    func usersNotInGroup(_ groupId: UUID) -> [User] {
-        let memberUserIds = Set(memberships.filter { $0.groupId == groupId }.map(\.userId))
-        return users.filter { !memberUserIds.contains($0.id) }
+    /// Search profiles by name/username, excluding existing group members.
+    func searchProfilesNotInGroup(groupId: UUID, query: String, limit: Int = 25) async -> [User] {
+        guard isAuthenticated else { return [] }
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+
+        do {
+            // Fetch current members so we can exclude them client-side.
+            let memberRows: [MemberIdRow] = try await supabase
+                .from("memberships")
+                .select("user_id")
+                .eq("group_id", value: groupId)
+                .execute()
+                .value
+            let memberIds = Set(memberRows.map(\.userId))
+
+            let pattern = "%\(trimmed.lowercased())%"
+            let rows: [ProfileRow] = try await supabase
+                .from("profiles")
+                .select()
+                .or("username.ilike.\(pattern),name.ilike.\(pattern)")
+                .limit(limit)
+                .execute()
+                .value
+
+            return rows
+                .filter { !memberIds.contains($0.id) }
+                .map { User(id: $0.id, name: $0.name, username: $0.username, email: "", avatarUrl: $0.avatarUrl) }
+        } catch {
+            debugPrint("searchProfilesNotInGroup error:", error)
+            return []
+        }
     }
 
     // MARK: - Nights
@@ -224,60 +529,306 @@ class DataStore: ObservableObject {
     }
 
     @discardableResult
-    func pullCard(in groupId: UUID) -> Night? {
-        guard let user = currentUser else { return nil }
-        guard let memberIdx = memberships.firstIndex(where: {
-            $0.groupId == groupId && $0.userId == user.id
-        }) else { return nil }
-        guard memberships[memberIdx].cardsRemaining > 0 else { return nil }
-        guard activeNight(for: groupId) == nil else { return nil }
+    func pullCard(in groupId: UUID) async -> Night? {
+        guard isAuthenticated else { return nil }
+        do {
+            let authUser = try await supabase.auth.session.user
 
-        // Decrement cards
-        memberships[memberIdx].cardsRemaining -= 1
+            // 1) Ensure membership + cards
+            let membership: MembershipRow = try await supabase
+                .from("memberships")
+                .select()
+                .eq("group_id", value: groupId)
+                .eq("user_id", value: authUser.id)
+                .single()
+                .execute()
+                .value
+            guard membership.cardsRemaining > 0 else { return nil }
 
-        // Create night
-        let night = Night(groupId: groupId, pulledByUserId: user.id)
-        nights.append(night)
+            // 2) Ensure no active night
+            let active: [NightRow] = try await supabase
+                .from("nights")
+                .select()
+                .eq("group_id", value: groupId)
+                .eq("status", value: "Active")
+                .limit(1)
+                .execute()
+                .value
+            guard active.isEmpty else { return nil }
 
-        // Notify all group members
-        let groupMembers = memberships.filter { $0.groupId == groupId }
-        for member in groupMembers {
-            let notification = AppNotification(
-                groupId: groupId,
-                recipientUserId: member.userId,
-                title: "BLACKOUT CARD PULLED",
-                message: "\(user.name) PULLED THEIR BLACKOUT CARD!",
-                notificationType: .cardPulled
-            )
-            notifications.append(notification)
-            if member.userId != user.id {
-                showBanner(notification)
+            // 3) Decrement cards (non-atomic MVP; unique index prevents multiple active nights)
+            _ = try await supabase
+                .from("memberships")
+                .update(MembershipCardsUpdate(cards_remaining: membership.cardsRemaining - 1))
+                .eq("id", value: membership.id)
+                .execute()
+
+            // 4) Create night
+            let nightRow: NightRow = try await supabase
+                .from("nights")
+                .insert(NightInsert(group_id: groupId, pulled_by_user_id: authUser.id, status: "Active"))
+                .select()
+                .single()
+                .execute()
+                .value
+
+            // 5) Notify all group members
+            let memberIds: [MemberIdRow] = try await supabase
+                .from("memberships")
+                .select("user_id")
+                .eq("group_id", value: groupId)
+                .execute()
+                .value
+
+            let pullerName = currentUser?.name ?? "Someone"
+
+            let inserts = memberIds.map { member in
+                NotificationInsert(
+                    group_id: groupId,
+                    recipient_user_id: member.userId,
+                    title: "BLACKOUT CARD PULLED",
+                    message: "\(pullerName) PULLED THEIR BLACKOUT CARD!",
+                    notification_type: "cardPulled"
+                )
             }
-        }
+            if !inserts.isEmpty {
+                _ = try await supabase.from("notifications").insert(inserts).execute()
+            }
 
-        return night
+            await refreshGroupData(groupId: groupId)
+            await refreshNotificationsForCurrentUser()
+            return night(for: nightRow.id)
+        } catch {
+            debugPrint("pullCard error:", error)
+            return nil
+        }
     }
 
-    func closeNight(_ nightId: UUID) {
-        guard let idx = nights.firstIndex(where: { $0.id == nightId }) else { return }
-        nights[idx].status = .closed
+    func closeNight(_ nightId: UUID) async {
+        do {
+            _ = try await supabase
+                .from("nights")
+                .update(NightStatusUpdate(status: "Closed"))
+                .eq("id", value: nightId)
+                .execute()
+            if let night = night(for: nightId) {
+                await refreshGroupData(groupId: night.groupId)
+            }
+        } catch {
+            debugPrint("closeNight error:", error)
+        }
+    }
+
+    /// Loads memberships + member profiles + nights + media + vote cases/votes for a single group.
+    func refreshGroupData(groupId: UUID) async {
+        guard isAuthenticated else { return }
+        do {
+            let membershipRows: [MembershipRow] = try await supabase
+                .from("memberships")
+                .select()
+                .eq("group_id", value: groupId)
+                .execute()
+                .value
+
+            // Replace memberships for this group
+            memberships.removeAll { $0.groupId == groupId }
+            memberships.append(contentsOf: membershipRows.map {
+                Membership(
+                    id: $0.id,
+                    groupId: $0.groupId,
+                    userId: $0.userId,
+                    role: $0.role.lowercased() == "admin" ? .admin : .member,
+                    cardsRemaining: $0.cardsRemaining,
+                    lastResetAt: $0.lastResetAt,
+                    lastPetitionAt: $0.lastPetitionAt
+                )
+            })
+
+            let memberUserIds = Array(Set(membershipRows.map(\.userId)))
+            if !memberUserIds.isEmpty {
+                let profiles: [ProfileRow] = try await supabase
+                    .from("profiles")
+                    .select()
+                    .in("id", values: memberUserIds)
+                    .execute()
+                    .value
+
+                for profile in profiles {
+                    let u = User(id: profile.id, name: profile.name, username: profile.username, email: "", avatarUrl: profile.avatarUrl)
+                    if let idx = users.firstIndex(where: { $0.id == u.id }) { users[idx] = u } else { users.append(u) }
+                }
+            }
+
+            let nightRows: [NightRow] = try await supabase
+                .from("nights")
+                .select()
+                .eq("group_id", value: groupId)
+                .order("pulled_at", ascending: false)
+                .execute()
+                .value
+
+            nights.removeAll { $0.groupId == groupId }
+            nights.append(contentsOf: nightRows.map {
+                Night(
+                    id: $0.id,
+                    groupId: $0.groupId,
+                    pulledByUserId: $0.pulledByUserId,
+                    pulledAt: $0.pulledAt,
+                    status: $0.status == "Closed" ? .closed : .active
+                )
+            })
+
+            let mediaRows: [MediaRow] = try await supabase
+                .from("media")
+                .select()
+                .eq("group_id", value: groupId)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+
+            mediaItems.removeAll { $0.groupId == groupId }
+            mediaItems.append(contentsOf: mediaRows.map { row in
+                let resolvedURL: String?
+                if let raw = row.url, !raw.isEmpty {
+                    resolvedURL = raw.hasPrefix("http") ? raw : storagePublicURL(bucket: "media", path: raw)
+                } else {
+                    resolvedURL = nil
+                }
+                return MediaItem(
+                    id: row.id,
+                    nightId: row.nightId,
+                    groupId: row.groupId,
+                    uploaderUserId: row.uploaderUserId,
+                    mediaType: row.mediaType == "Video" ? .video : .image,
+                    localImageData: nil,
+                    url: resolvedURL,
+                    caption: row.caption,
+                    createdAt: row.createdAt
+                )
+            })
+
+            let vcRows: [VoteCaseRow] = try await supabase
+                .from("vote_cases")
+                .select()
+                .eq("group_id", value: groupId)
+                .order("opens_at", ascending: false)
+                .execute()
+                .value
+
+            voteCases.removeAll { $0.groupId == groupId }
+            voteCases.append(contentsOf: vcRows.map {
+                VoteCase(
+                    id: $0.id,
+                    groupId: $0.groupId,
+                    nightId: $0.nightId,
+                    caseType: $0.caseType == "Petition" ? .petition : .failure,
+                    targetUserId: $0.targetUserId,
+                    initiatedByUserId: $0.initiatedByUserId,
+                    opensAt: $0.opensAt,
+                    closesAt: $0.closesAt,
+                    status: $0.status == "Resolved" ? .resolved : .open,
+                    result: ($0.result == "Pass") ? .pass : (($0.result == "Fail") ? .fail : nil),
+                    createdAt: $0.createdAt
+                )
+            })
+
+            let openCaseIds = vcRows.map(\.id)
+            if !openCaseIds.isEmpty {
+                let voteRows: [VoteRow] = try await supabase
+                    .from("votes")
+                    .select()
+                    .in("vote_case_id", values: openCaseIds)
+                    .execute()
+                    .value
+                votes.removeAll { openCaseIds.contains($0.voteCaseId) }
+                votes.append(contentsOf: voteRows.map {
+                    Vote(
+                        id: $0.id,
+                        voteCaseId: $0.voteCaseId,
+                        voterUserId: $0.voterUserId,
+                        value: $0.value == "No" ? .no : .yes,
+                        createdAt: $0.createdAt
+                    )
+                })
+            }
+        } catch {
+            debugPrint("refreshGroupData error:", error)
+        }
+    }
+
+    func refreshNotificationsForCurrentUser(limit: Int = 100) async {
+        guard isAuthenticated else { return }
+        do {
+            let authUser = try await supabase.auth.session.user
+            let rows: [NotificationRow] = try await supabase
+                .from("notifications")
+                .select()
+                .eq("recipient_user_id", value: authUser.id)
+                .order("created_at", ascending: false)
+                .limit(limit)
+                .execute()
+                .value
+
+            notifications = rows.map {
+                AppNotification(
+                    id: $0.id,
+                    groupId: $0.groupId,
+                    recipientUserId: $0.recipientUserId,
+                    title: $0.title,
+                    message: $0.message,
+                    notificationType: NotificationType(rawValue: $0.notificationType) ?? .cardPulled,
+                    createdAt: $0.createdAt,
+                    isRead: $0.isRead
+                )
+            }
+        } catch {
+            debugPrint("refreshNotificationsForCurrentUser error:", error)
+        }
     }
 
     // MARK: - Media
 
     @discardableResult
-    func addMedia(nightId: UUID, groupId: UUID, mediaType: MediaType, imageData: Data?, caption: String?) -> MediaItem? {
-        guard let user = currentUser else { return nil }
-        let item = MediaItem(
-            nightId: nightId,
-            groupId: groupId,
-            uploaderUserId: user.id,
-            mediaType: mediaType,
-            localImageData: imageData,
-            caption: caption
-        )
-        mediaItems.append(item)
-        return item
+    func addMedia(nightId: UUID, groupId: UUID, mediaType: MediaType, imageData: Data?, caption: String?) async -> MediaItem? {
+        guard isAuthenticated else { return nil }
+        guard mediaType == .image else { return nil } // MVP: images only
+        guard let data = imageData else { return nil }
+
+        do {
+            let authUser = try await supabase.auth.session.user
+            let filePath = "groups/\(groupId.uuidString)/nights/\(nightId.uuidString)/\(UUID().uuidString).jpg"
+
+            try await supabase.storage
+                .from("media")
+                .upload(
+                    filePath,
+                    data: data,
+                    options: FileOptions(contentType: "image/jpeg")
+                )
+
+            let row: MediaRow = try await supabase
+                .from("media")
+                .insert(
+                    MediaInsert(
+                        night_id: nightId,
+                        group_id: groupId,
+                        uploader_user_id: authUser.id,
+                        media_type: "Image",
+                        url: filePath,
+                        caption: caption
+                    )
+                )
+                .select()
+                .single()
+                .execute()
+                .value
+
+            await refreshGroupData(groupId: groupId)
+            return mediaItems.first(where: { $0.id == row.id })
+        } catch {
+            debugPrint("addMedia error:", error)
+            return nil
+        }
     }
 
     func mediaForNight(_ nightId: UUID) -> [MediaItem] {
@@ -289,114 +840,180 @@ class DataStore: ObservableObject {
     // MARK: - Vote Cases
 
     @discardableResult
-    func startFailureVote(groupId: UUID, nightId: UUID, targetUserId: UUID) -> VoteCase? {
+    func startFailureVote(groupId: UUID, nightId: UUID, targetUserId: UUID) async -> VoteCase? {
+        guard isAuthenticated else { return nil }
         guard let user = currentUser else { return nil }
         guard let night = nights.first(where: { $0.id == nightId }) else { return nil }
         guard night.pulledByUserId == user.id else { return nil }
         guard let group = groups.first(where: { $0.id == groupId }) else { return nil }
 
-        // Prevent duplicate open failure votes against the same person in the same night
-        let existing = voteCases.first {
-            $0.nightId == nightId && $0.targetUserId == targetUserId &&
-            $0.caseType == .failure && $0.status == .open
+        do {
+            // Prevent duplicates
+            let existing: [VoteCaseRow] = try await supabase
+                .from("vote_cases")
+                .select()
+                .eq("group_id", value: groupId)
+                .eq("night_id", value: nightId)
+                .eq("target_user_id", value: targetUserId)
+                .eq("case_type", value: "Failure")
+                .eq("status", value: "Open")
+                .limit(1)
+                .execute()
+                .value
+            guard existing.isEmpty else { return nil }
+
+            let closesAt = Date().addingTimeInterval(Double(group.voteDurationHours) * 3600)
+
+            let row: VoteCaseRow = try await supabase
+                .from("vote_cases")
+                .insert(
+                    VoteCaseInsert(
+                        group_id: groupId,
+                        night_id: nightId,
+                        case_type: "Failure",
+                        target_user_id: targetUserId,
+                        initiated_by_user_id: user.id,
+                        closes_at: closesAt,
+                        status: "Open"
+                    )
+                )
+                .select()
+                .single()
+                .execute()
+                .value
+
+            // Notify group members
+            let memberIds: [MemberIdRow] = try await supabase
+                .from("memberships")
+                .select("user_id")
+                .eq("group_id", value: groupId)
+                .execute()
+                .value
+
+            let targetName = userName(for: targetUserId)
+            let inserts = memberIds.map {
+                NotificationInsert(
+                    group_id: groupId,
+                    recipient_user_id: $0.userId,
+                    title: "Vote Started",
+                    message: "A vote has been started against \(targetName) for not showing up",
+                    notification_type: "voteStarted"
+                )
+            }
+            if !inserts.isEmpty {
+                _ = try await supabase.from("notifications").insert(inserts).execute()
+            }
+
+            await refreshGroupData(groupId: groupId)
+            await refreshNotificationsForCurrentUser()
+            return voteCase(for: row.id)
+        } catch {
+            debugPrint("startFailureVote error:", error)
+            return nil
         }
-        guard existing == nil else { return nil }
-
-        let voteCase = VoteCase(
-            groupId: groupId,
-            nightId: nightId,
-            caseType: .failure,
-            targetUserId: targetUserId,
-            initiatedByUserId: user.id,
-            voteDurationHours: group.voteDurationHours
-        )
-        voteCases.append(voteCase)
-
-        // Notify group
-        let targetName = userName(for: targetUserId)
-        let groupMembers = memberships.filter { $0.groupId == groupId }
-        for member in groupMembers {
-            let notification = AppNotification(
-                groupId: groupId,
-                recipientUserId: member.userId,
-                title: "Vote Started",
-                message: "A vote has been started against \(targetName) for not showing up",
-                notificationType: .voteStarted
-            )
-            notifications.append(notification)
-            showBanner(notification)
-        }
-
-        return voteCase
     }
 
     @discardableResult
-    func startPetition(groupId: UUID) -> VoteCase? {
+    func startPetition(groupId: UUID) async -> VoteCase? {
+        guard isAuthenticated else { return nil }
         guard let user = currentUser else { return nil }
-        guard let membership = memberships.first(where: {
-            $0.groupId == groupId && $0.userId == user.id
-        }) else { return nil }
+        guard let membership = memberships.first(where: { $0.groupId == groupId && $0.userId == user.id }) else { return nil }
         guard membership.cardsRemaining == 0 else { return nil }
-
-        // Limit: 1 petition per period per user per group
-        let existingPetition = voteCases.first {
-            $0.groupId == groupId &&
-            $0.targetUserId == user.id &&
-            $0.caseType == .petition &&
-            ($0.createdAt > (membership.lastResetAt ?? .distantPast))
-        }
-        guard existingPetition == nil else { return nil }
-
         guard let group = groups.first(where: { $0.id == groupId }) else { return nil }
 
-        let voteCase = VoteCase(
-            groupId: groupId,
-            caseType: .petition,
-            targetUserId: user.id,
-            initiatedByUserId: user.id,
-            voteDurationHours: group.voteDurationHours
-        )
-        voteCases.append(voteCase)
+        do {
+            let existing: [VoteCaseRow] = try await supabase
+                .from("vote_cases")
+                .select()
+                .eq("group_id", value: groupId)
+                .eq("target_user_id", value: user.id)
+                .eq("case_type", value: "Petition")
+                .eq("status", value: "Open")
+                .limit(1)
+                .execute()
+                .value
+            guard existing.isEmpty else { return nil }
 
-        // Update lastPetitionAt
-        if let idx = memberships.firstIndex(where: {
-            $0.groupId == groupId && $0.userId == user.id
-        }) {
-            memberships[idx].lastPetitionAt = Date()
+            let closesAt = Date().addingTimeInterval(Double(group.voteDurationHours) * 3600)
+
+            let row: VoteCaseRow = try await supabase
+                .from("vote_cases")
+                .insert(
+                    VoteCaseInsert(
+                        group_id: groupId,
+                        night_id: nil,
+                        case_type: "Petition",
+                        target_user_id: user.id,
+                        initiated_by_user_id: user.id,
+                        closes_at: closesAt,
+                        status: "Open"
+                    )
+                )
+                .select()
+                .single()
+                .execute()
+                .value
+
+            _ = try await supabase
+                .from("memberships")
+                .update(MembershipLastPetitionUpdate(last_petition_at: Date()))
+                .eq("id", value: membership.id)
+                .execute()
+
+            // Notify group members
+            let memberIds: [MemberIdRow] = try await supabase
+                .from("memberships")
+                .select("user_id")
+                .eq("group_id", value: groupId)
+                .execute()
+                .value
+
+            let inserts = memberIds.map {
+                NotificationInsert(
+                    group_id: groupId,
+                    recipient_user_id: $0.userId,
+                    title: "Petition to Restore",
+                    message: "\(user.name) is petitioning to restore their Blackout Card",
+                    notification_type: "petitionStarted"
+                )
+            }
+            if !inserts.isEmpty {
+                _ = try await supabase.from("notifications").insert(inserts).execute()
+            }
+
+            await refreshGroupData(groupId: groupId)
+            await refreshNotificationsForCurrentUser()
+            return voteCase(for: row.id)
+        } catch {
+            debugPrint("startPetition error:", error)
+            return nil
         }
-
-        // Notify group
-        let groupMembers = memberships.filter { $0.groupId == groupId }
-        for member in groupMembers {
-            let notification = AppNotification(
-                groupId: groupId,
-                recipientUserId: member.userId,
-                title: "Petition to Restore",
-                message: "\(user.name) is petitioning to restore their Blackout Card",
-                notificationType: .petitionStarted
-            )
-            notifications.append(notification)
-            showBanner(notification)
-        }
-
-        return voteCase
     }
 
     @discardableResult
-    func castVote(voteCaseId: UUID, value: VoteValue) -> Vote? {
+    func castVote(voteCaseId: UUID, value: VoteValue) async -> Vote? {
+        guard isAuthenticated else { return nil }
         guard let user = currentUser else { return nil }
         guard let vc = voteCases.first(where: { $0.id == voteCaseId }) else { return nil }
         guard vc.status == .open else { return nil }
         guard Date() < vc.closesAt else { return nil }
+        guard !votes.contains(where: { $0.voteCaseId == voteCaseId && $0.voterUserId == user.id }) else { return nil }
 
-        // One vote per user per case
-        guard !votes.contains(where: {
-            $0.voteCaseId == voteCaseId && $0.voterUserId == user.id
-        }) else { return nil }
+        do {
+            let row: VoteRow = try await supabase
+                .from("votes")
+                .insert(VoteInsert(vote_case_id: voteCaseId, voter_user_id: user.id, value: value.rawValue))
+                .select()
+                .single()
+                .execute()
+                .value
 
-        let vote = Vote(voteCaseId: voteCaseId, voterUserId: user.id, value: value)
-        votes.append(vote)
-        return vote
+            await refreshGroupData(groupId: vc.groupId)
+            return votes.first(where: { $0.id == row.id })
+        } catch {
+            debugPrint("castVote error:", error)
+            return nil
+        }
     }
 
     func hasCurrentUserVoted(on voteCaseId: UUID) -> Bool {
@@ -439,53 +1056,22 @@ class DataStore: ObservableObject {
     // MARK: - Resolve Expired Votes
 
     func resolveExpiredVoteCases() {
-        let now = Date()
-        for i in voteCases.indices {
-            guard voteCases[i].status == .open, now >= voteCases[i].closesAt else { continue }
+        guard isAuthenticated else { return }
+        Task {
+            do {
+                _ = try await supabase.rpc("resolve_expired_vote_cases").execute()
 
-            let caseVotes = votes.filter { $0.voteCaseId == voteCases[i].id }
-            let yesCount = caseVotes.filter { $0.value == .yes }.count
-            let noCount = caseVotes.filter { $0.value == .no }.count
-
-            // Majority of votes cast; ties and no votes = fail
-            let passed = yesCount > noCount && (yesCount + noCount) > 0
-
-            voteCases[i].status = .resolved
-            voteCases[i].result = passed ? .pass : .fail
-
-            if passed {
-                if voteCases[i].caseType == .failure {
-                    // Penalty: target loses card for this period
-                    if let idx = memberships.firstIndex(where: {
-                        $0.groupId == voteCases[i].groupId && $0.userId == voteCases[i].targetUserId
-                    }) {
-                        memberships[idx].cardsRemaining = 0
-                    }
-                } else if voteCases[i].caseType == .petition {
-                    // Restore card
-                    if let idx = memberships.firstIndex(where: {
-                        $0.groupId == voteCases[i].groupId && $0.userId == voteCases[i].targetUserId
-                    }) {
-                        memberships[idx].cardsRemaining = 1
-                    }
-                }
-            }
-
-            // Notify group
-            let groupMembers = memberships.filter { $0.groupId == voteCases[i].groupId }
-            let targetName = userName(for: voteCases[i].targetUserId)
-            let resultText = passed ? "passed" : "failed"
-            let typeText = voteCases[i].caseType == .failure ? "Vote" : "Petition"
-
-            for member in groupMembers {
-                let notification = AppNotification(
-                    groupId: voteCases[i].groupId,
-                    recipientUserId: member.userId,
-                    title: "\(typeText) Resolved",
-                    message: "The \(typeText.lowercased()) regarding \(targetName) has \(resultText)",
-                    notificationType: voteCases[i].caseType == .failure ? .voteResolved : .petitionResolved
+                // Refresh all groups the current user belongs to (keeps UI consistent).
+                let groupIds = Set(memberships
+                    .filter { $0.userId == currentUser?.id }
+                    .map(\.groupId)
                 )
-                notifications.append(notification)
+                for gid in groupIds {
+                    await refreshGroupData(groupId: gid)
+                }
+                await refreshNotificationsForCurrentUser()
+            } catch {
+                debugPrint("resolveExpiredVoteCases rpc error:", error)
             }
         }
     }
@@ -498,43 +1084,80 @@ class DataStore: ObservableObject {
         periodType: PeriodType?,
         periodStart: Date?,
         periodEnd: Date?
-    ) {
-        guard let idx = groups.firstIndex(where: { $0.id == groupId }) else { return }
-        if let cpp = cardsPerPeriod { groups[idx].cardsPerPeriod = cpp }
-        if let pt = periodType { groups[idx].periodType = pt }
-        groups[idx].periodStart = periodStart
-        groups[idx].periodEnd = periodEnd
+    ) async {
+        guard isAuthenticated else { return }
+        do {
+            let fmt = ISO8601DateFormatter()
+            fmt.formatOptions = [.withFullDate]
+            let payload = GroupSettingsUpdate(
+                cards_per_period: cardsPerPeriod,
+                period_type: periodType?.rawValue,
+                period_start: periodStart.map { fmt.string(from: $0) },
+                period_end: periodEnd.map { fmt.string(from: $0) }
+            )
+            if cardsPerPeriod != nil || periodType != nil || periodStart != nil || periodEnd != nil {
+                _ = try await supabase
+                    .from("groups")
+                    .update(payload)
+                    .eq("id", value: groupId)
+                    .execute()
+            }
+            await refreshGroupsForCurrentUser()
+        } catch {
+            debugPrint("updateGroupSettings error:", error)
+        }
     }
 
-    func resetPeriod(groupId: UUID) {
+    func resetPeriod(groupId: UUID) async {
+        guard isAuthenticated else { return }
         guard let group = groups.first(where: { $0.id == groupId }) else { return }
-        let now = Date()
+        do {
+            // Reset all memberships for this group
+            let resetFmt = ISO8601DateFormatter()
+            resetFmt.formatOptions = [.withInternetDateTime]
+            _ = try await supabase
+                .from("memberships")
+                .update(MembershipResetUpdate(
+                    cards_remaining: group.cardsPerPeriod,
+                    last_reset_at: resetFmt.string(from: Date()),
+                    last_petition_at: nil
+                ))
+                .eq("group_id", value: groupId)
+                .execute()
 
-        for i in memberships.indices {
-            if memberships[i].groupId == groupId {
-                memberships[i].cardsRemaining = group.cardsPerPeriod
-                memberships[i].lastResetAt = now
-                memberships[i].lastPetitionAt = nil
+            // Close active night if any
+            _ = try await supabase
+                .from("nights")
+                .update(NightStatusUpdate(status: "Closed"))
+                .eq("group_id", value: groupId)
+                .eq("status", value: "Active")
+                .execute()
+
+            // Notify all members
+            let memberIds: [MemberIdRow] = try await supabase
+                .from("memberships")
+                .select("user_id")
+                .eq("group_id", value: groupId)
+                .execute()
+                .value
+
+            let inserts = memberIds.map {
+                NotificationInsert(
+                    group_id: groupId,
+                    recipient_user_id: $0.userId,
+                    title: "Period Reset",
+                    message: "The period has been reset. Your cards have been restored!",
+                    notification_type: "periodReset"
+                )
             }
-        }
+            if !inserts.isEmpty {
+                _ = try await supabase.from("notifications").insert(inserts).execute()
+            }
 
-        // Close active night if any
-        if let nightIdx = nights.firstIndex(where: { $0.groupId == groupId && $0.status == .active }) {
-            nights[nightIdx].status = .closed
-        }
-
-        // Notify all members
-        let groupMembers = memberships.filter { $0.groupId == groupId }
-        for member in groupMembers {
-            let notification = AppNotification(
-                groupId: groupId,
-                recipientUserId: member.userId,
-                title: "Period Reset",
-                message: "The period has been reset. Your cards have been restored!",
-                notificationType: .periodReset
-            )
-            notifications.append(notification)
-            showBanner(notification)
+            await refreshGroupData(groupId: groupId)
+            await refreshNotificationsForCurrentUser()
+        } catch {
+            debugPrint("resetPeriod error:", error)
         }
     }
 
@@ -551,12 +1174,39 @@ class DataStore: ObservableObject {
         if let idx = notifications.firstIndex(where: { $0.id == id }) {
             notifications[idx].isRead = true
         }
+        guard isAuthenticated else { return }
+        Task {
+            do {
+                _ = try await supabase
+                    .from("notifications")
+                    .update(NotificationReadUpdate(is_read: true))
+                    .eq("id", value: id)
+                    .execute()
+                await refreshNotificationsForCurrentUser()
+            } catch {
+                debugPrint("markNotificationRead error:", error)
+            }
+        }
     }
 
     func markAllNotificationsRead() {
         guard let user = currentUser else { return }
         for i in notifications.indices where notifications[i].recipientUserId == user.id {
             notifications[i].isRead = true
+        }
+        guard isAuthenticated else { return }
+        Task {
+            do {
+                let authUser = try await supabase.auth.session.user
+                _ = try await supabase
+                    .from("notifications")
+                    .update(NotificationReadUpdate(is_read: true))
+                    .eq("recipient_user_id", value: authUser.id)
+                    .execute()
+                await refreshNotificationsForCurrentUser()
+            } catch {
+                debugPrint("markAllNotificationsRead error:", error)
+            }
         }
     }
 
@@ -581,6 +1231,12 @@ class DataStore: ObservableObject {
 
     // MARK: - Helpers
 
+    private func storagePublicURL(bucket: String, path: String) -> String {
+        let base = SupabaseConfig.projectURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        return "\(base)/storage/v1/object/public/\(bucket)/\(cleanPath)"
+    }
+
     func userName(for userId: UUID) -> String {
         users.first { $0.id == userId }?.name ?? "Unknown"
     }
@@ -599,27 +1255,4 @@ class DataStore: ObservableObject {
             }
     }
 
-    // MARK: - Seed Demo Data (for development/testing)
-
-    func seedDemoData() {
-        let alice = User(name: "Alice Johnson", username: "alice", email: "alice@demo.com", password: "password")
-        let bob = User(name: "Bob Smith", username: "bob", email: "bob@demo.com", password: "password")
-        let charlie = User(name: "Charlie Davis", username: "charlie", email: "charlie@demo.com", password: "password")
-        let diana = User(name: "Diana Lee", username: "diana", email: "diana@demo.com", password: "password")
-        users = [alice, bob, charlie, diana]
-
-        let group1 = Group(name: "Weekend Crew", createdByUserId: alice.id, cardsPerPeriod: 2)
-        let group2 = Group(name: "College Friends", createdByUserId: bob.id)
-        groups = [group1, group2]
-
-        memberships = [
-            Membership(groupId: group1.id, userId: alice.id, role: .admin, cardsRemaining: 2),
-            Membership(groupId: group1.id, userId: bob.id, cardsRemaining: 2),
-            Membership(groupId: group1.id, userId: charlie.id, cardsRemaining: 2),
-            Membership(groupId: group1.id, userId: diana.id, cardsRemaining: 2),
-            Membership(groupId: group2.id, userId: bob.id, role: .admin, cardsRemaining: 1),
-            Membership(groupId: group2.id, userId: alice.id, cardsRemaining: 1),
-            Membership(groupId: group2.id, userId: charlie.id, cardsRemaining: 1),
-        ]
-    }
 }

@@ -49,28 +49,34 @@ class NightViewModel: ObservableObject {
 
     func uploadMedia(imageData: Data, caption: String?) {
         guard let night else { return }
-        store.addMedia(
-            nightId: nightId,
-            groupId: night.groupId,
-            mediaType: .image,
-            imageData: imageData,
-            caption: caption
-        )
-        loadData()
+        Task {
+            _ = await store.addMedia(
+                nightId: nightId,
+                groupId: night.groupId,
+                mediaType: .image,
+                imageData: imageData,
+                caption: caption
+            )
+            await store.refreshGroupData(groupId: night.groupId)
+            loadData()
+        }
     }
 
     func startVote(targetUserId: UUID) {
         guard let night else { return }
-        let result = store.startFailureVote(
-            groupId: night.groupId,
-            nightId: nightId,
-            targetUserId: targetUserId
-        )
-        if result == nil {
-            errorMessage = "Unable to start vote. Only the card puller can initiate votes."
+        Task {
+            let result = await store.startFailureVote(
+                groupId: night.groupId,
+                nightId: nightId,
+                targetUserId: targetUserId
+            )
+            if result == nil {
+                errorMessage = "Unable to start vote. Only the card puller can initiate votes."
+            }
+            showStartVote = false
+            await store.refreshGroupData(groupId: night.groupId)
+            loadData()
         }
-        showStartVote = false
-        loadData()
     }
 
     func uploaderName(for media: MediaItem) -> String {
