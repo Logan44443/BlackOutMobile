@@ -30,6 +30,7 @@ struct GroupRow: Codable, Hashable {
     var nextResetAt: Date?
     var voteThreshold: String
     var voteDurationHours: Int
+    var groupPhotoUrl: String?
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -43,7 +44,57 @@ struct GroupRow: Codable, Hashable {
         case nextResetAt = "next_reset_at"
         case voteThreshold = "vote_threshold"
         case voteDurationHours = "vote_duration_hours"
+        case groupPhotoUrl = "group_photo_url"
         case createdAt = "created_at"
+    }
+
+    /// Supabase/Postgres often return DATE columns as "yyyy-MM-dd" strings; default Date decoding expects ISO8601 with time.
+    private static let dateOnlyFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        createdByUserId = try c.decode(UUID.self, forKey: .createdByUserId)
+        isPrivate = try c.decode(Bool.self, forKey: .isPrivate)
+        cardsPerPeriod = try c.decode(Int.self, forKey: .cardsPerPeriod)
+        periodType = try c.decode(String.self, forKey: .periodType)
+        periodStart = Self.decodeOptionalDate(c, key: .periodStart)
+        periodEnd = Self.decodeOptionalDate(c, key: .periodEnd)
+        nextResetAt = try c.decodeIfPresent(Date.self, forKey: .nextResetAt)
+        voteThreshold = try c.decode(String.self, forKey: .voteThreshold)
+        voteDurationHours = try c.decode(Int.self, forKey: .voteDurationHours)
+        groupPhotoUrl = try c.decodeIfPresent(String.self, forKey: .groupPhotoUrl)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+    }
+
+    private static func decodeOptionalDate(_ c: KeyedDecodingContainer<GroupRow.CodingKeys>, key: CodingKeys) -> Date? {
+        if let date = try? c.decodeIfPresent(Date.self, forKey: key) { return date }
+        guard let s = try? c.decodeIfPresent(String.self, forKey: key), !s.isEmpty else { return nil }
+        return dateOnlyFormatter.date(from: s)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(createdByUserId, forKey: .createdByUserId)
+        try c.encode(isPrivate, forKey: .isPrivate)
+        try c.encode(cardsPerPeriod, forKey: .cardsPerPeriod)
+        try c.encode(periodType, forKey: .periodType)
+        try c.encodeIfPresent(periodStart, forKey: .periodStart)
+        try c.encodeIfPresent(periodEnd, forKey: .periodEnd)
+        try c.encodeIfPresent(nextResetAt, forKey: .nextResetAt)
+        try c.encode(voteThreshold, forKey: .voteThreshold)
+        try c.encode(voteDurationHours, forKey: .voteDurationHours)
+        try c.encodeIfPresent(groupPhotoUrl, forKey: .groupPhotoUrl)
+        try c.encode(createdAt, forKey: .createdAt)
     }
 }
 
@@ -153,6 +204,7 @@ struct NotificationRow: Codable, Hashable {
     let notificationType: String
     let isRead: Bool
     let createdAt: Date
+    let inviterUserId: UUID?
 
     enum CodingKeys: String, CodingKey {
         case id, title, message
@@ -161,6 +213,7 @@ struct NotificationRow: Codable, Hashable {
         case notificationType = "notification_type"
         case isRead = "is_read"
         case createdAt = "created_at"
+        case inviterUserId = "inviter_user_id"
     }
 }
 
@@ -208,6 +261,7 @@ struct NotificationInsert: Encodable {
     let title: String
     let message: String
     let notification_type: String
+    var inviter_user_id: UUID? = nil
 }
 
 struct VoteCaseInsert: Encodable {
@@ -229,6 +283,17 @@ struct VoteInsert: Encodable {
 struct CreateGroupInsert: Encodable {
     let name: String
     let created_by_user_id: UUID
+    let group_photo_url: String?
+
+    init(name: String, created_by_user_id: UUID, group_photo_url: String? = nil) {
+        self.name = name
+        self.created_by_user_id = created_by_user_id
+        self.group_photo_url = group_photo_url
+    }
+}
+
+struct GroupPhotoUpdate: Encodable {
+    let group_photo_url: String?
 }
 
 // MARK: - UPDATE payloads (Encodable, for .update())

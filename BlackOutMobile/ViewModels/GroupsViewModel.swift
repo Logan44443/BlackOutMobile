@@ -7,7 +7,10 @@ class GroupsViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var showCreateGroup = false
     @Published var newGroupName = ""
+    @Published var newGroupPhotoData: Data?
     @Published var errorMessage: String?
+    /// Shown when group was created but photo upload failed (e.g. Storage 403).
+    @Published var groupCreatedPhotoFailedMessage: String?
 
     // Join group via invite code (simulated)
     @Published var showJoinGroup = false
@@ -26,15 +29,22 @@ class GroupsViewModel: ObservableObject {
         }
 
         let name = newGroupName.trimmingCharacters(in: .whitespaces)
+        let photoData = newGroupPhotoData
         isLoading = true
+        groupCreatedPhotoFailedMessage = nil
         Task { [weak self] in
             guard let self else { return }
-            let result = await self.store.createGroup(name: name)
+            let (group, photoUploadFailed) = await self.store.createGroup(name: name, photoData: photoData)
             self.isLoading = false
-            if result != nil {
+            if group != nil {
                 self.newGroupName = ""
-                self.showCreateGroup = false
+                self.newGroupPhotoData = nil
+                // Store was already refreshed inside createGroup (with new group + photo); push to list then close sheet
                 self.loadGroups()
+                self.showCreateGroup = false
+                if photoUploadFailed {
+                    self.groupCreatedPhotoFailedMessage = "Group created. Photo couldn’t be uploaded—check Storage (avatars/media) RLS in Supabase."
+                }
             } else {
                 self.errorMessage = "Failed to create group"
             }

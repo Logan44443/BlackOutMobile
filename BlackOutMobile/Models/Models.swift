@@ -37,6 +37,7 @@ struct Group: Identifiable, Codable, Hashable {
     var nextResetAt: Date?
     var voteThreshold: VoteThreshold
     var voteDurationHours: Int
+    var groupPhotoUrl: String?
     let createdAt: Date
 
     init(
@@ -51,6 +52,7 @@ struct Group: Identifiable, Codable, Hashable {
         nextResetAt: Date? = nil,
         voteThreshold: VoteThreshold = .majority,
         voteDurationHours: Int = 12,
+        groupPhotoUrl: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -64,6 +66,7 @@ struct Group: Identifiable, Codable, Hashable {
         self.nextResetAt = nextResetAt
         self.voteThreshold = voteThreshold
         self.voteDurationHours = voteDurationHours
+        self.groupPhotoUrl = groupPhotoUrl
         self.createdAt = createdAt
     }
 }
@@ -284,6 +287,8 @@ struct AppNotification: Identifiable, Hashable {
     let notificationType: NotificationType
     let createdAt: Date
     var isRead: Bool
+    /// For groupInvite: the user who sent the invite.
+    let inviterUserId: UUID?
 
     init(
         id: UUID = UUID(),
@@ -293,7 +298,8 @@ struct AppNotification: Identifiable, Hashable {
         message: String,
         notificationType: NotificationType,
         createdAt: Date = Date(),
-        isRead: Bool = false
+        isRead: Bool = false,
+        inviterUserId: UUID? = nil
     ) {
         self.id = id
         self.groupId = groupId
@@ -303,6 +309,7 @@ struct AppNotification: Identifiable, Hashable {
         self.notificationType = notificationType
         self.createdAt = createdAt
         self.isRead = isRead
+        self.inviterUserId = inviterUserId
     }
 }
 
@@ -313,6 +320,7 @@ enum NotificationType: String, Hashable {
     case petitionStarted
     case petitionResolved
     case periodReset
+    case groupInvite
 }
 
 // MARK: - Display Helpers

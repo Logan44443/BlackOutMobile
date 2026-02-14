@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 struct GroupHomeView: View {
     let groupId: UUID
@@ -9,6 +10,8 @@ struct GroupHomeView: View {
     @State private var showInviteLinkCopied = false
     @State private var navigateToNight: Night?
     @State private var pullCardDragOffset: CGFloat = 0
+    @State private var groupPhotoItem: PhotosPickerItem?
+    @State private var groupPhotoUploading = false
     private let pullCardDragThreshold: CGFloat = 160
 
     init(groupId: UUID) {
@@ -43,7 +46,7 @@ struct GroupHomeView: View {
                     // Members Section
                     membersSection
 
-                    // Add Members & Invite by Link (admin only)
+                    // Invite to Group & Invite by Link (admin only)
                     if viewModel.isAdmin {
                         addMembersSection
                         inviteByLinkSection
@@ -109,7 +112,7 @@ struct GroupHomeView: View {
             Text(viewModel.errorMessage ?? "")
         }
         .onAppear {
-            viewModel.loadData()
+            viewModel.refreshAndLoad()
         }
     }
 
@@ -117,6 +120,66 @@ struct GroupHomeView: View {
 
     private var groupHeaderCard: some View {
         VStack(spacing: 16) {
+            // Group photo (with optional change-photo for admins)
+            ZStack(alignment: .bottomTrailing) {
+                if let urlString = viewModel.group?.groupPhotoUrl, let url = URL(string: urlString) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(height: 140)
+                                .frame(maxWidth: .infinity)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        default:
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color.surfaceDark)
+                                .frame(height: 140)
+                                .overlay { ProgressView().tint(.white) }
+                        }
+                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.surfaceDark)
+                        .frame(height: 140)
+                        .overlay {
+                            Image(systemName: "photo")
+                                .font(.largeTitle)
+                                .foregroundColor(.textSecondary)
+                        }
+                }
+                if groupPhotoUploading {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(.ultraThinMaterial)
+                        .frame(height: 140)
+                        .overlay { ProgressView().tint(.white) }
+                }
+                if viewModel.isAdmin {
+                    PhotosPicker(selection: $groupPhotoItem, matching: .images) {
+                        Image(systemName: "camera.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.white, Color.accentPurple)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                    .disabled(groupPhotoUploading)
+                }
+            }
+            .onChange(of: groupPhotoItem) { _, newItem in
+                guard let newItem else { return }
+                Task {
+                    guard let data = try? await newItem.loadTransferable(type: Data.self) else { return }
+                    await MainActor.run { groupPhotoUploading = true }
+                    _ = await DataStore.shared.uploadGroupPhoto(groupId: groupId, imageData: data)
+                    await MainActor.run {
+                        groupPhotoUploading = false
+                        groupPhotoItem = nil
+                        viewModel.refreshAndLoad()
+                    }
+                }
+            }
+
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
@@ -366,7 +429,7 @@ struct GroupHomeView: View {
         .cardStyle()
     }
 
-    // MARK: - Add Members Section
+    // MARK: - Invite to Group Section
 
     private var addMembersSection: some View {
         Button {
@@ -377,10 +440,10 @@ struct GroupHomeView: View {
                     .font(.title3)
                     .foregroundColor(.accentPurple)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Add Members")
+                    Text("Invite to Group")
                         .font(.subheadline.bold())
                         .foregroundColor(.white)
-                    Text("Search by name or email")
+                    Text("Search by name or username")
                         .font(.caption)
                         .foregroundColor(.textSecondary)
                 }

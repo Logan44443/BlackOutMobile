@@ -169,6 +169,11 @@ class DataStore: ObservableObject {
         }
     }
 
+    /// Call when opening the profile screen so the latest avatar and profile data are shown.
+    func refreshCurrentUserProfileIfNeeded() async {
+        await refreshCurrentUserProfile()
+    }
+
     private func observeAuthState() async {
         for await state in supabase.auth.authStateChanges {
             if [.initialSession, .signedIn, .signedOut].contains(state.event) {
@@ -187,34 +192,47 @@ class DataStore: ObservableObject {
 
     /// If the DB trigger didn't create a profiles row (e.g. it wasn't active at signup time),
     /// create one now so foreign-key references to profiles(id) work.
-    private func ensureProfileExists() async {
+    /// Returns `true` if the profile exists (or was just created).
+    @discardableResult
+    private func ensureProfileExists() async -> Bool {
         do {
             let authUser = try await supabase.auth.session.user
+            let uid = authUser.id
+            debugPrint("ensureProfileExists: checking for uid=\(uid)")
 
-            // Check if profile already exists
-            let existing: [ProfileRow] = try await supabase
+            // Use upsert with onConflict so it never fails on duplicate
+            let meta = authUser.userMetadata
+            let name = meta["name"]?.stringValue ?? "User"
+            let username = meta["username"]?.stringValue?.lowercased()
+                ?? "user_\(uid.uuidString.prefix(8).lowercased())"
+
+            _ = try await supabase
+                .from("profiles")
+                .upsert(
+                    ProfileInsert(id: uid, name: name, username: username),
+                    onConflict: "id",
+                    ignoreDuplicates: true   // ON CONFLICT (id) DO NOTHING
+                )
+                .execute()
+
+            // Verify the row actually exists after upsert
+            let verify: [ProfileRow] = try await supabase
                 .from("profiles")
                 .select()
-                .eq("id", value: authUser.id)
+                .eq("id", value: uid)
                 .limit(1)
                 .execute()
                 .value
 
-            if existing.isEmpty {
-                // Profile is missing — create it from auth metadata
-                let meta = authUser.userMetadata
-                let name = (meta["name"] as? String) ?? "User"
-                let username = (meta["username"] as? String)?.lowercased()
-                    ?? "user_\(authUser.id.uuidString.prefix(8).lowercased())"
-
-                _ = try await supabase
-                    .from("profiles")
-                    .insert(ProfileInsert(id: authUser.id, name: name, username: username))
-                    .execute()
-                debugPrint("ensureProfileExists: created missing profile for \(authUser.id)")
+            if verify.isEmpty {
+                debugPrint("ensureProfileExists: FAILED — profile still missing after upsert for \(uid)")
+                return false
             }
+            debugPrint("ensureProfileExists: OK — profile exists for \(uid)")
+            return true
         } catch {
             debugPrint("ensureProfileExists error:", error)
+            return false
         }
     }
 
@@ -297,31 +315,48 @@ class DataStore: ObservableObject {
                     nextResetAt: row.nextResetAt,
                     voteThreshold: .majority,
                     voteDurationHours: row.voteDurationHours,
+                    groupPhotoUrl: row.groupPhotoUrl,
                     createdAt: row.createdAt
                 )
             }
         } catch {
-            debugPrint("refreshGroupsForCurrentUser error:", error)
+            // Ignore cancellation (e.g. user ended pull-to-refresh or navigated away)
+            let ns = error as NSError
+            let isCancelled = ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
+                || (error as? URLError)?.code == .cancelled
+            if !isCancelled {
+                debugPrint("refreshGroupsForCurrentUser error:", error)
+            }
         }
     }
 
     // MARK: - Groups
 
-    @discardableResult
-    func createGroup(name: String) async -> Group? {
-        guard isAuthenticated, !name.isEmpty else { return nil }
+    /// Creates a group. Returns the group and whether a provided photo failed to upload (e.g. Storage RLS).
+    func createGroup(name: String, photoData: Data? = nil) async -> (group: Group?, photoUploadFailed: Bool) {
+        guard isAuthenticated, !name.isEmpty else { return (nil, false) }
         do {
             let authUser = try await supabase.auth.session.user
+            let uid = authUser.id
 
-            // Insert the group. The SELECT policy allows the creator to read it back
-            // (created_by_user_id = auth.uid()), so .select().single() works.
+            // Guarantee profile row exists before creating a group (FK requirement)
+            await ensureProfileExists()
+
+            // Insert the group
             let groupRow: GroupRow = try await supabase
                 .from("groups")
-                .insert(CreateGroupInsert(name: name, created_by_user_id: authUser.id))
+                .insert(CreateGroupInsert(name: name, created_by_user_id: uid))
                 .select()
                 .single()
                 .execute()
                 .value
+
+            var photoUploadFailed = false
+            if let imageData = photoData {
+                if await uploadGroupPhoto(groupId: groupRow.id, imageData: imageData) == nil {
+                    photoUploadFailed = true
+                }
+            }
 
             // Add creator as Admin member.
             _ = try await supabase
@@ -337,9 +372,33 @@ class DataStore: ObservableObject {
                 .execute()
 
             await refreshGroupsForCurrentUser()
-            return group(for: groupRow.id)
+            return (group(for: groupRow.id), photoUploadFailed)
         } catch {
             debugPrint("createGroup error:", error)
+            return (nil, false)
+        }
+    }
+
+    /// Upload or replace a group photo. Updates the group_photo_url column.
+    @discardableResult
+    func uploadGroupPhoto(groupId: UUID, imageData: Data) async -> String? {
+        do {
+            let filePath = "groups/\(groupId.uuidString).jpg"
+            try await supabase.storage
+                .from("media")
+                .upload(filePath, data: imageData, options: FileOptions(contentType: "image/jpeg", upsert: true))
+            let url = storagePublicURL(bucket: "media", path: filePath)
+
+            try await supabase
+                .from("groups")
+                .update(GroupPhotoUpdate(group_photo_url: url))
+                .eq("id", value: groupId)
+                .execute()
+
+            await refreshGroupsForCurrentUser()
+            return url
+        } catch {
+            debugPrint("uploadGroupPhoto error:", error)
             return nil
         }
     }
@@ -373,6 +432,7 @@ class DataStore: ObservableObject {
                         nextResetAt: groupRow.nextResetAt,
                         voteThreshold: .majority,
                         voteDurationHours: groupRow.voteDurationHours,
+                        groupPhotoUrl: groupRow.groupPhotoUrl,
                         createdAt: groupRow.createdAt
                     )
                 )
@@ -415,6 +475,11 @@ class DataStore: ObservableObject {
         }
     }
 
+    /// Refetch groups (and memberships) from the server. Call when the groups list appears so photos and metadata are up to date.
+    func refreshGroups() async {
+        await refreshGroupsForCurrentUser()
+    }
+
     func groupsForCurrentUser() -> [GroupInfo] {
         guard let user = currentUser else { return [] }
         let userMemberships = memberships.filter { $0.userId == user.id }
@@ -453,29 +518,84 @@ class DataStore: ObservableObject {
         return memberships.contains { $0.groupId == groupId && $0.userId == user.id && $0.role == .admin }
     }
 
+    /// Sends a group invite to the user. They see it in Notifications and can Accept or Decline.
     @discardableResult
-    func addMemberToGroup(groupId: UUID, userId: UUID) async -> Bool {
+    func sendGroupInvite(groupId: UUID, inviteeUserId: UUID) async -> Bool {
         guard isAuthenticated else { return false }
         guard let group = groups.first(where: { $0.id == groupId }) else { return false }
+        guard let inviter = currentUser else { return false }
         do {
+            // Don't invite if already a member
+            let alreadyMember = memberships.contains { $0.groupId == groupId && $0.userId == inviteeUserId }
+            guard !alreadyMember else { return false }
             _ = try await supabase
-                .from("memberships")
+                .from("notifications")
                 .insert(
-                    CreateMembershipInsert(
+                    NotificationInsert(
                         group_id: groupId,
-                        user_id: userId,
-                        role: "Member",
-                        cards_remaining: group.cardsPerPeriod
+                        recipient_user_id: inviteeUserId,
+                        title: "Group invitation",
+                        message: "\(inviter.name) invited you to join \(group.name).",
+                        notification_type: "groupInvite",
+                        inviter_user_id: inviter.id
                     )
                 )
                 .execute()
-            await refreshGroupsForCurrentUser()
-            await refreshGroupData(groupId: groupId)
+            await refreshNotificationsForCurrentUser()
             return true
         } catch {
-            debugPrint("addMemberToGroup error:", error)
+            debugPrint("sendGroupInvite error:", error)
             return false
         }
+    }
+
+    /// Accept a group invite (add self to group and mark notification read).
+    func acceptGroupInvite(notificationId: UUID) async {
+        guard isAuthenticated else { return }
+        guard let notification = notifications.first(where: { $0.id == notificationId }),
+              notification.notificationType == .groupInvite,
+              notification.recipientUserId == currentUser?.id else { return }
+        let groupId = notification.groupId
+        let cardsPerPeriod: Int
+        if let group = groups.first(where: { $0.id == groupId }) {
+            cardsPerPeriod = group.cardsPerPeriod
+        } else {
+            guard let row: GroupRow = try? await supabase
+                .from("groups")
+                .select()
+                .eq("id", value: groupId)
+                .single()
+                .execute()
+                .value else { return }
+            cardsPerPeriod = row.cardsPerPeriod
+        }
+        await addMembershipAndMarkInviteRead(groupId: groupId, cardsPerPeriod: cardsPerPeriod, notificationId: notificationId)
+    }
+
+    private func addMembershipAndMarkInviteRead(groupId: UUID, cardsPerPeriod: Int, notificationId: UUID) async {
+        guard let uid = currentUser?.id else { return }
+        do {
+            _ = try await supabase
+                .from("memberships")
+                .insert(CreateMembershipInsert(group_id: groupId, user_id: uid, role: "Member", cards_remaining: cardsPerPeriod))
+                .execute()
+            await refreshGroupsForCurrentUser()
+            await refreshGroupData(groupId: groupId)
+            await markNotificationRead(notificationId)
+            await refreshNotificationsForCurrentUser()
+        } catch {
+            debugPrint("acceptGroupInvite error:", error)
+        }
+    }
+
+    /// Decline a group invite (mark notification read).
+    func declineGroupInvite(notificationId: UUID) async {
+        guard isAuthenticated else { return }
+        guard let notification = notifications.first(where: { $0.id == notificationId }),
+              notification.notificationType == .groupInvite,
+              notification.recipientUserId == currentUser?.id else { return }
+        await markNotificationRead(notificationId)
+        await refreshNotificationsForCurrentUser()
     }
 
     /// Search profiles by name/username, excluding existing group members.
@@ -528,24 +648,38 @@ class DataStore: ObservableObject {
         nights.first { $0.id == id }
     }
 
-    @discardableResult
-    func pullCard(in groupId: UUID) async -> Night? {
-        guard isAuthenticated else { return nil }
+    enum PullCardResult {
+        case success(Night)
+        case noCardsRemaining
+        case activeNightExists
+        case notFoundOrDenied
+        case error(String)
+    }
+
+    /// Pull a blackout card in this group only. Eligibility is per-group: you must have cards in this group and no active night in this group.
+    func pullCard(in groupId: UUID) async -> PullCardResult {
+        guard isAuthenticated else { return .error("Not signed in.") }
         do {
             let authUser = try await supabase.auth.session.user
 
-            // 1) Ensure membership + cards
-            let membership: MembershipRow = try await supabase
-                .from("memberships")
-                .select()
-                .eq("group_id", value: groupId)
-                .eq("user_id", value: authUser.id)
-                .single()
-                .execute()
-                .value
-            guard membership.cardsRemaining > 0 else { return nil }
+            // 1) Membership and cards for this group only
+            let membership: MembershipRow
+            do {
+                membership = try await supabase
+                    .from("memberships")
+                    .select()
+                    .eq("group_id", value: groupId)
+                    .eq("user_id", value: authUser.id)
+                    .single()
+                    .execute()
+                    .value
+            } catch {
+                debugPrint("pullCard membership fetch error:", error)
+                return .notFoundOrDenied
+            }
+            guard membership.cardsRemaining > 0 else { return .noCardsRemaining }
 
-            // 2) Ensure no active night
+            // 2) No active night in this group only
             let active: [NightRow] = try await supabase
                 .from("nights")
                 .select()
@@ -554,16 +688,16 @@ class DataStore: ObservableObject {
                 .limit(1)
                 .execute()
                 .value
-            guard active.isEmpty else { return nil }
+            guard active.isEmpty else { return .activeNightExists }
 
-            // 3) Decrement cards (non-atomic MVP; unique index prevents multiple active nights)
+            // 3) Decrement cards for this membership only
             _ = try await supabase
                 .from("memberships")
                 .update(MembershipCardsUpdate(cards_remaining: membership.cardsRemaining - 1))
                 .eq("id", value: membership.id)
                 .execute()
 
-            // 4) Create night
+            // 4) Create night in this group
             let nightRow: NightRow = try await supabase
                 .from("nights")
                 .insert(NightInsert(group_id: groupId, pulled_by_user_id: authUser.id, status: "Active"))
@@ -572,7 +706,7 @@ class DataStore: ObservableObject {
                 .execute()
                 .value
 
-            // 5) Notify all group members
+            // 5) Notify members of this group only
             let memberIds: [MemberIdRow] = try await supabase
                 .from("memberships")
                 .select("user_id")
@@ -581,7 +715,6 @@ class DataStore: ObservableObject {
                 .value
 
             let pullerName = currentUser?.name ?? "Someone"
-
             let inserts = memberIds.map { member in
                 NotificationInsert(
                     group_id: groupId,
@@ -597,10 +730,13 @@ class DataStore: ObservableObject {
 
             await refreshGroupData(groupId: groupId)
             await refreshNotificationsForCurrentUser()
-            return night(for: nightRow.id)
+            if let night = night(for: nightRow.id) {
+                return .success(night)
+            }
+            return .error("Card pulled but could not load night.")
         } catch {
             debugPrint("pullCard error:", error)
-            return nil
+            return .error(error.localizedDescription)
         }
     }
 
@@ -778,7 +914,8 @@ class DataStore: ObservableObject {
                     message: $0.message,
                     notificationType: NotificationType(rawValue: $0.notificationType) ?? .cardPulled,
                     createdAt: $0.createdAt,
-                    isRead: $0.isRead
+                    isRead: $0.isRead,
+                    inviterUserId: $0.inviterUserId
                 )
             }
         } catch {

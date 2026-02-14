@@ -65,6 +65,7 @@ struct NotificationBanner: View {
         case .petitionStarted: return "arrow.counterclockwise"
         case .petitionResolved: return "checkmark.seal.fill"
         case .periodReset: return "arrow.clockwise"
+        case .groupInvite: return "person.badge.plus"
         }
     }
 
@@ -76,6 +77,7 @@ struct NotificationBanner: View {
         case .petitionStarted: return .warningAmber
         case .petitionResolved: return .successGreen
         case .periodReset: return .accentPurple
+        case .groupInvite: return .accentPurple
         }
     }
 }

@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS public.groups (
   next_reset_at TIMESTAMPTZ,
   vote_threshold TEXT NOT NULL DEFAULT 'Majority' CHECK (vote_threshold IN ('Majority')),
   vote_duration_hours INTEGER NOT NULL DEFAULT 12,
+  group_photo_url TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -452,8 +453,133 @@ If you get **unique constraint violation on username** (e.g. two backfilled user
 `UPDATE public.profiles SET username = 'user_' || REPLACE(LEFT(id::text, 8), '-', '') || '_' || (ROW_NUMBER() OVER (ORDER BY id)::text) WHERE username LIKE 'user_%' AND LENGTH(username) <= 12;`  
 or fix the duplicate in Table Editor.
 
+## Group invites (invite instead of direct add)
+
+To support **inviting** users to a group (they see the invite in Notifications and can Accept or Decline), run this in the **SQL Editor**:
+
+```sql
+-- Add inviter column to notifications
+ALTER TABLE public.notifications
+  ADD COLUMN IF NOT EXISTS inviter_user_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL;
+
+-- Allow 'groupInvite' notification type (drop existing check and re-add)
+-- If DROP fails, find the check name: SELECT conname FROM pg_constraint WHERE conrelid = 'public.notifications'::regclass AND contype = 'c';
+ALTER TABLE public.notifications DROP CONSTRAINT IF EXISTS notifications_notification_type_check;
+ALTER TABLE public.notifications
+  ADD CONSTRAINT notifications_notification_type_check CHECK (notification_type IN (
+    'cardPulled', 'voteStarted', 'voteResolved',
+    'petitionStarted', 'petitionResolved', 'periodReset', 'groupInvite'
+  ));
+```
+
+- **Send invite:** app inserts a notification with `notification_type = 'groupInvite'`, `inviter_user_id = auth.uid()`, `recipient_user_id = invitee`.
+- **Accept:** app adds the user to `memberships` and marks the notification read.
+- **Decline:** app marks the notification read.
+
+**Allow invitees to read the group (so Accept can fetch `cards_per_period`).** Run after adding `groupInvite`:
+
+```sql
+DROP POLICY IF EXISTS "Members can read their groups" ON public.groups;
+CREATE POLICY "Members can read their groups" ON public.groups
+  FOR SELECT USING (
+    created_by_user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.memberships
+      WHERE public.memberships.group_id = public.groups.id
+        AND public.memberships.user_id = auth.uid()
+    )
+    OR EXISTS (
+      SELECT 1 FROM public.notifications n
+      WHERE n.group_id = public.groups.id
+        AND n.recipient_user_id = auth.uid()
+        AND n.notification_type = 'groupInvite'
+        AND n.is_read = FALSE
+    )
+  );
+```
+
+## Fix FKs that reference public.users (legacy)
+
+If your DB was created with FKs pointing at **public.users** instead of **public.profiles**, you’ll see errors like:
+- `groups_created_by_user_id_fkey`
+- `memberships_user_id_fkey`
+- **`nights_pulled_by_user_id_fkey`** (pull card fails)
+- **`notifications_recipient_user_id_fkey`** (pull card → "Unable to pull card" when creating notifications)
+- and similar on `media`, `vote_cases`, `votes`, `friendships`
+
+**Quick fix for pull-card notification error only** (SQL Editor):
+
+```sql
+ALTER TABLE public.notifications DROP CONSTRAINT IF EXISTS notifications_recipient_user_id_fkey;
+ALTER TABLE public.notifications ADD CONSTRAINT notifications_recipient_user_id_fkey
+  FOREIGN KEY (recipient_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+```
+
+Full fix — run the following in the **SQL Editor** to point all user FKs at **public.profiles** (run only the parts for constraints that exist):
+
+```sql
+-- Nights (pull card)
+ALTER TABLE public.nights DROP CONSTRAINT IF EXISTS nights_pulled_by_user_id_fkey;
+ALTER TABLE public.nights ADD CONSTRAINT nights_pulled_by_user_id_fkey
+  FOREIGN KEY (pulled_by_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+
+-- Media
+ALTER TABLE public.media DROP CONSTRAINT IF EXISTS media_uploader_user_id_fkey;
+ALTER TABLE public.media ADD CONSTRAINT media_uploader_user_id_fkey
+  FOREIGN KEY (uploader_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+
+-- Vote cases
+ALTER TABLE public.vote_cases DROP CONSTRAINT IF EXISTS vote_cases_target_user_id_fkey;
+ALTER TABLE public.vote_cases ADD CONSTRAINT vote_cases_target_user_id_fkey
+  FOREIGN KEY (target_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+ALTER TABLE public.vote_cases DROP CONSTRAINT IF EXISTS vote_cases_initiated_by_user_id_fkey;
+ALTER TABLE public.vote_cases ADD CONSTRAINT vote_cases_initiated_by_user_id_fkey
+  FOREIGN KEY (initiated_by_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+
+-- Votes
+ALTER TABLE public.votes DROP CONSTRAINT IF EXISTS votes_voter_user_id_fkey;
+ALTER TABLE public.votes ADD CONSTRAINT votes_voter_user_id_fkey
+  FOREIGN KEY (voter_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+
+-- Notifications
+ALTER TABLE public.notifications DROP CONSTRAINT IF EXISTS notifications_recipient_user_id_fkey;
+ALTER TABLE public.notifications ADD CONSTRAINT notifications_recipient_user_id_fkey
+  FOREIGN KEY (recipient_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+
+-- Friendships (if you use this table)
+ALTER TABLE public.friendships DROP CONSTRAINT IF EXISTS friendships_requester_user_id_fkey;
+ALTER TABLE public.friendships ADD CONSTRAINT friendships_requester_user_id_fkey
+  FOREIGN KEY (requester_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+ALTER TABLE public.friendships DROP CONSTRAINT IF EXISTS friendships_addressee_user_id_fkey;
+ALTER TABLE public.friendships ADD CONSTRAINT friendships_addressee_user_id_fkey
+  FOREIGN KEY (addressee_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+```
+
 ## Setup Notes
 
-- **Storage**: create buckets `avatars` and `media`. For the current app code, set `media` to **public** (so `AsyncImage` can load URLs).
+- **Storage (required for group + profile photos)**  
+  - **"Bucket not found"**: Create the buckets. **Supabase Dashboard** → **Storage** → **New bucket** → create **`avatars`** and **`media`** (lowercase).
+  - **Make both buckets public**: Open each bucket → **Configuration** → enable **Public bucket**.
+  - **403 "new row violates row-level security policy" (Unauthorized)**: The bucket exists but RLS is blocking uploads. Either use the Dashboard (**Storage** → bucket → **Policies** → New policy → allow **INSERT** and **UPDATE** for `authenticated`), or run this in the **SQL Editor** to allow authenticated uploads to both buckets:
+
+```sql
+-- Allow authenticated users to upload to avatars and media buckets
+CREATE POLICY "Allow authenticated uploads to avatars"
+ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id = 'avatars');
+CREATE POLICY "Allow authenticated updates to avatars"
+ON storage.objects FOR UPDATE TO authenticated
+USING (bucket_id = 'avatars');
+
+CREATE POLICY "Allow authenticated uploads to media"
+ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id = 'media');
+CREATE POLICY "Allow authenticated updates to media"
+ON storage.objects FOR UPDATE TO authenticated
+USING (bucket_id = 'media');
+```
+
+    If you get "policy already exists", drop them first: `DROP POLICY IF EXISTS "Allow authenticated uploads to avatars" ON storage.objects;` (and same for the other three names) then re-run the CREATEs.
+
 - **Cron** (recommended): schedule `public.resolve_expired_vote_cases()` every minute.
 

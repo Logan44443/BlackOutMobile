@@ -7,7 +7,7 @@ struct AddMemberSheet: View {
     @State private var searchText = ""
     @State private var results: [User] = []
     @State private var isLoading = false
-    @State private var addedUserIds: Set<UUID> = []
+    @State private var invitedUserIds: Set<UUID> = []
     @State private var errorMessage: String?
     @FocusState private var isSearchFocused: Bool
     @State private var searchTask: Task<Void, Never>?
@@ -64,7 +64,7 @@ struct AddMemberSheet: View {
                         ScrollView {
                             LazyVStack(spacing: 0) {
                                 ForEach(results) { user in
-                                    addMemberRow(user: user)
+                                    inviteRow(user: user)
                                 }
                             }
                             .padding(.horizontal, 16)
@@ -73,7 +73,7 @@ struct AddMemberSheet: View {
                     }
                 }
             }
-            .navigationTitle("Add to Group")
+            .navigationTitle("Invite to Group")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
@@ -88,18 +88,18 @@ struct AddMemberSheet: View {
         }
     }
 
-    private func addMemberRow(user: User) -> some View {
-        let alreadyAdded = addedUserIds.contains(user.id)
+    private func inviteRow(user: User) -> some View {
+        let alreadyInvited = invitedUserIds.contains(user.id)
 
         return Button {
-            guard !alreadyAdded else { return }
+            guard !alreadyInvited else { return }
             Task {
-                let success = await store.addMemberToGroup(groupId: groupId, userId: user.id)
+                let success = await store.sendGroupInvite(groupId: groupId, inviteeUserId: user.id)
                 if success {
-                    addedUserIds.insert(user.id)
+                    invitedUserIds.insert(user.id)
                     errorMessage = nil
                 } else {
-                    errorMessage = "Could not add \(user.name)."
+                    errorMessage = "Could not invite \(user.name)."
                 }
             }
         } label: {
@@ -124,11 +124,11 @@ struct AddMemberSheet: View {
 
                 Spacer()
 
-                if alreadyAdded {
+                if alreadyInvited {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.successGreen)
                 } else {
-                    Text("Add")
+                    Text("Invite")
                         .font(.subheadline.weight(.semibold))
                         .foregroundColor(.accentPurple)
                 }
@@ -137,7 +137,7 @@ struct AddMemberSheet: View {
             .background(Color.surfaceDark)
             .cornerRadius(12)
         }
-        .disabled(alreadyAdded)
+        .disabled(alreadyInvited)
         .padding(.bottom, 8)
     }
 
@@ -151,7 +151,7 @@ struct AddMemberSheet: View {
                 .font(.headline)
                 .foregroundColor(.white)
             Text(searchText.isEmpty
-                 ? "Type a name or username to add someone."
+                 ? "Type a name or username to invite someone."
                  : "No one matches \"\(searchText)\"."
             )
             .font(.subheadline)

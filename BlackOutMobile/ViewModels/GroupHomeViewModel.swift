@@ -28,6 +28,16 @@ class GroupHomeViewModel: ObservableObject {
         Task {
             await store.refreshGroupData(groupId: groupId)
             await store.refreshNotificationsForCurrentUser()
+            loadData()
+        }
+    }
+
+    /// Call when the group screen appears so canPullCard uses fresh server data for this group only.
+    func refreshAndLoad() {
+        Task {
+            await store.refreshGroupData(groupId: groupId)
+            await store.refreshNotificationsForCurrentUser()
+            loadData()
         }
     }
 
@@ -60,8 +70,17 @@ class GroupHomeViewModel: ObservableObject {
     func pullCard() {
         Task {
             let result = await store.pullCard(in: groupId)
-            if result == nil {
-                errorMessage = "Unable to pull card. You may not have cards remaining or there's an active night."
+            switch result {
+            case .success:
+                break
+            case .noCardsRemaining:
+                errorMessage = "You have no cards remaining in this group. Wait for a period reset or a successful petition."
+            case .activeNightExists:
+                errorMessage = "There's already an active night in this group. Close it first or wait for the period to reset."
+            case .notFoundOrDenied:
+                errorMessage = "Could not find your membership in this group. Try leaving and rejoining, or refresh the screen."
+            case .error(let message):
+                errorMessage = "Unable to pull card: \(message)"
             }
             loadData()
         }

@@ -16,7 +16,29 @@ struct GroupsListView: View {
                 .sheet(isPresented: $showProfile) { ProfileView() }
                 .sheet(isPresented: $viewModel.showCreateGroup) { CreateGroupView(viewModel: viewModel) }
                 .sheet(isPresented: $showNotifications) { NotificationsListView() }
-                .onAppear { viewModel.loadGroups() }
+                .alert("Group created", isPresented: Binding(
+                    get: { viewModel.groupCreatedPhotoFailedMessage != nil },
+                    set: { if !$0 { viewModel.groupCreatedPhotoFailedMessage = nil } }
+                )) {
+                    Button("OK") { viewModel.groupCreatedPhotoFailedMessage = nil }
+                } message: {
+                    Text(viewModel.groupCreatedPhotoFailedMessage ?? "")
+                }
+                .onAppear {
+                    viewModel.loadGroups()
+                    Task {
+                        await store.refreshGroups()
+                        viewModel.loadGroups()
+                    }
+                }
+                .onChange(of: viewModel.showCreateGroup) { _, isShowing in
+                    if !isShowing {
+                        Task {
+                            await store.refreshGroups()
+                            viewModel.loadGroups()
+                        }
+                    }
+                }
                 .onChange(of: store.groups.count) { viewModel.loadGroups() }
                 .onChange(of: store.memberships) { _, _ in viewModel.loadGroups() }
         }
@@ -69,7 +91,30 @@ struct GroupsListView: View {
                     Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
                 }
             } label: {
-                Image(systemName: "person.circle").foregroundColor(.white)
+                profileMenuLabel
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+            }
+            .menuStyle(.borderlessButton)
+        }
+    }
+
+    @ViewBuilder
+    private var profileMenuLabel: some View {
+        ZStack {
+            Image(systemName: "person.circle")
+                .foregroundColor(.white)
+                .font(.system(size: 32))
+            if let urlString = store.currentUser?.avatarUrl, let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    }
+                }
+                .frame(width: 32, height: 32)
+                .clipShape(Circle())
             }
         }
     }
@@ -77,9 +122,11 @@ struct GroupsListView: View {
     // MARK: - Groups List
 
     private var groupsList: some View {
-        ScrollView {
+        let sortedGroups = viewModel.groups
+            .sorted { $0.group.name.localizedCaseInsensitiveCompare($1.group.name) == .orderedAscending }
+        return ScrollView {
             LazyVStack(spacing: 12) {
-                ForEach(viewModel.groups) { groupInfo in
+                ForEach(sortedGroups) { groupInfo in
                     NavigationLink(value: groupInfo) {
                         GroupRowView(groupInfo: groupInfo)
                     }
@@ -87,6 +134,10 @@ struct GroupsListView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
+        }
+        .refreshable {
+            await store.refreshGroups()
+            await MainActor.run { viewModel.loadGroups() }
         }
         .navigationDestination(for: GroupInfo.self) { groupInfo in
             GroupHomeView(groupId: groupInfo.group.id)
@@ -129,16 +180,8 @@ struct GroupRowView: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            // Group Icon
-            ZStack {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(Color.accentPurple.opacity(0.2))
-                    .frame(width: 52, height: 52)
-
-                Text(String(groupInfo.group.name.prefix(1)).uppercased())
-                    .font(.title2.bold())
-                    .foregroundColor(.accentPurple)
-            }
+            // Group Photo or Fallback Icon
+            groupIcon
 
             // Group Info
             VStack(alignment: .leading, spacing: 4) {
@@ -165,5 +208,45 @@ struct GroupRowView: View {
         .padding(16)
         .background(Color.surfaceDark)
         .cornerRadius(16)
+    }
+
+    @ViewBuilder
+    private var groupIcon: some View {
+        if let urlString = groupInfo.group.groupPhotoUrl, !urlString.isEmpty, let url = URL(string: urlString) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 52, height: 52)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                case .failure:
+                    groupIconPlaceholder
+                case .empty:
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Color.surfaceDark)
+                        .frame(width: 52, height: 52)
+                        .overlay { ProgressView().tint(.white) }
+                @unknown default:
+                    groupIconPlaceholder
+                }
+            }
+            .id(urlString)
+        } else {
+            groupIconPlaceholder
+        }
+    }
+
+    private var groupIconPlaceholder: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.accentPurple.opacity(0.2))
+                .frame(width: 52, height: 52)
+
+            Text(String(groupInfo.group.name.prefix(1)).uppercased())
+                .font(.title2.bold())
+                .foregroundColor(.accentPurple)
+        }
     }
 }

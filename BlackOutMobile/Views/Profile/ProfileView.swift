@@ -62,8 +62,31 @@ struct ProfileView: View {
                         }
                         .onChange(of: selectedPhotoItem) { _, newItem in
                             Task {
-                                if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                                    avatarImageData = data
+                                guard let newItem else {
+                                    avatarImageData = nil
+                                    return
+                                }
+                                guard let data = try? await newItem.loadTransferable(type: Data.self) else { return }
+                                await MainActor.run { avatarImageData = data }
+                                // Auto-save so "pick photo then leave" still persists the new picture
+                                let currentName = store.currentUser?.name ?? ""
+                                let currentUsername = store.currentUser?.username ?? ""
+                                let (success, error) = await store.updateProfile(
+                                    avatarImageData: data,
+                                    name: currentName,
+                                    username: currentUsername,
+                                    email: nil,
+                                    newPassword: nil,
+                                    currentPassword: nil
+                                )
+                                await MainActor.run {
+                                    if success {
+                                        errorMessage = nil
+                                        successMessage = "Profile picture updated."
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { successMessage = nil }
+                                    } else {
+                                        errorMessage = error ?? "Could not save photo."
+                                    }
                                 }
                             }
                         }
@@ -144,10 +167,14 @@ struct ProfileView: View {
                 }
             }
             .onAppear {
-                name = user?.name ?? ""
-                username = user?.username ?? ""
-                email = user?.email ?? ""
-                avatarImageData = user?.avatarImageData
+                Task {
+                    await store.refreshCurrentUserProfileIfNeeded()
+                    await MainActor.run {
+                        name = store.currentUser?.name ?? ""
+                        username = store.currentUser?.username ?? ""
+                        email = store.currentUser?.email ?? ""
+                    }
+                }
             }
         }
     }
@@ -211,10 +238,14 @@ struct ProfileView: View {
             return
         }
 
+        // Only pass avatar data if the user actually picked a NEW photo
+        // (selectedPhotoItem changed). Don't re-upload existing data.
+        let newAvatarData: Data? = selectedPhotoItem != nil ? avatarImageData : nil
+
         isLoading = true
         Task {
             let result = await store.updateProfile(
-                avatarImageData: avatarImageData,
+                avatarImageData: newAvatarData,
                 name: name,
                 username: username,
                 email: emailChanged ? email : nil,
@@ -226,6 +257,7 @@ struct ProfileView: View {
 
             if result.success {
                 successMessage = "Profile updated."
+                selectedPhotoItem = nil   // Reset so next save won't re-upload
                 currentPassword = ""
                 newPassword = ""
                 confirmPassword = ""

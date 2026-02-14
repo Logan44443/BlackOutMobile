@@ -17,8 +17,12 @@ struct NotificationsListView: View {
                     ScrollView {
                         LazyVStack(spacing: 8) {
                             ForEach(notifications) { notification in
-                                NotificationRowView(notification: notification) {
-                                    store.markNotificationRead(notification.id)
+                                if notification.notificationType == .groupInvite {
+                                    GroupInviteRowView(notification: notification, store: store)
+                                } else {
+                                    NotificationRowView(notification: notification) {
+                                        store.markNotificationRead(notification.id)
+                                    }
                                 }
                             }
                         }
@@ -58,6 +62,123 @@ struct NotificationsListView: View {
                 .font(.subheadline)
                 .foregroundColor(.textSecondary)
         }
+    }
+}
+
+// MARK: - Group Invite Row (Accept / Decline)
+
+struct GroupInviteRowView: View {
+    let notification: AppNotification
+    @ObservedObject var store: DataStore
+    @State private var isAccepting = false
+    @State private var isDeclining = false
+
+    private var alreadyMember: Bool {
+        guard let uid = store.currentUser?.id else { return false }
+        return store.memberships.contains { $0.groupId == notification.groupId && $0.userId == uid }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color.accentPurple.opacity(0.15))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "person.badge.plus")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.accentPurple)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(notification.title)
+                            .font(.subheadline.bold())
+                            .foregroundColor(.white)
+                        Spacer()
+                        Text(notification.createdAt.relativeFormatted)
+                            .font(.caption2)
+                            .foregroundColor(.textSecondary)
+                    }
+                    Text(notification.message)
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                        .lineLimit(2)
+                }
+                if !notification.isRead {
+                    Circle()
+                        .fill(Color.accentPurple)
+                        .frame(width: 8, height: 8)
+                }
+            }
+            .padding(12)
+
+            if alreadyMember {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.successGreen)
+                    Text("You joined this group")
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            } else if !notification.isRead {
+                HStack(spacing: 12) {
+                    Button {
+                        Task {
+                            isAccepting = true
+                            await store.acceptGroupInvite(notificationId: notification.id)
+                            isAccepting = false
+                        }
+                    } label: {
+                        if isAccepting {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Accept")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.successGreen)
+                    .disabled(isAccepting || isDeclining)
+
+                    Button {
+                        Task {
+                            isDeclining = true
+                            await store.declineGroupInvite(notificationId: notification.id)
+                            isDeclining = false
+                        }
+                    } label: {
+                        if isDeclining {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Decline")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.textSecondary)
+                    .disabled(isAccepting || isDeclining)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            }
+        }
+        .background(notification.isRead ? Color.surfaceDark : Color.surfaceDark.opacity(0.8))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    notification.isRead ? Color.clear : Color.accentPurple.opacity(0.2),
+                    lineWidth: 1
+                )
+        )
     }
 }
 
@@ -126,6 +247,7 @@ struct NotificationRowView: View {
         case .petitionStarted: return "arrow.counterclockwise"
         case .petitionResolved: return "checkmark.seal.fill"
         case .periodReset: return "arrow.clockwise"
+        case .groupInvite: return "person.badge.plus"
         }
     }
 
@@ -137,6 +259,7 @@ struct NotificationRowView: View {
         case .petitionStarted: return .warningAmber
         case .petitionResolved: return .successGreen
         case .periodReset: return .accentPurple
+        case .groupInvite: return .accentPurple
         }
     }
 }
