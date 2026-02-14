@@ -26,10 +26,10 @@ struct GroupsListView: View {
                 }
                 .onAppear {
                     viewModel.loadGroups()
-                    Task {
-                        await store.refreshGroups()
-                        viewModel.loadGroups()
-                    }
+                }
+                .task {
+                    await store.refreshGroups()
+                    viewModel.loadGroups()
                 }
                 .onChange(of: viewModel.showCreateGroup) { _, isShowing in
                     if !isShowing {
