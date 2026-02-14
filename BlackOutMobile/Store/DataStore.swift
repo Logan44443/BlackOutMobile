@@ -182,11 +182,30 @@ class DataStore: ObservableObject {
                     await ensureProfileExists()
                     await refreshCurrentUserProfile()
                     await refreshGroupsForCurrentUser()
+                    if let token = Self.storedDeviceToken { await registerDeviceToken(token) }
                 } else {
                     currentUser = nil
                     isAuthenticated = false
                 }
             }
+        }
+    }
+
+    private static let deviceTokenKey = "BlackOut.DeviceToken"
+    static var storedDeviceToken: String? { UserDefaults.standard.string(forKey: deviceTokenKey) }
+
+    /// Register device token for push (card-pull notifications). Call when token is received or when user signs in.
+    func registerDeviceToken(_ token: String) async {
+        guard !token.isEmpty else { return }
+        UserDefaults.standard.set(token, forKey: Self.deviceTokenKey)
+        guard isAuthenticated, let uid = currentUser?.id else { return }
+        do {
+            try await supabase
+                .from("device_tokens")
+                .upsert(DeviceTokenInsert(user_id: uid, token: token, platform: "ios"), onConflict: "user_id,token")
+                .execute()
+        } catch {
+            debugPrint("registerDeviceToken error:", error)
         }
     }
 
@@ -727,6 +746,9 @@ class DataStore: ObservableObject {
             if !inserts.isEmpty {
                 _ = try await supabase.from("notifications").insert(inserts).execute()
             }
+
+            // Lyft-style: trigger push to all group members (Edge Function sends APNs; cron repeats until they open app)
+            Task { await triggerCardPullPush(groupId: groupId, pullerName: pullerName) }
 
             await refreshGroupData(groupId: groupId)
             await refreshNotificationsForCurrentUser()
@@ -1350,6 +1372,27 @@ class DataStore: ObservableObject {
     func unreadCount() -> Int {
         guard let user = currentUser else { return 0 }
         return notifications.filter { $0.recipientUserId == user.id && !$0.isRead }.count
+    }
+
+    /// Number of unread "card pulled" notifications for the current user (used for in-app vibration).
+    var unreadCardPulledCount: Int {
+        guard let user = currentUser else { return 0 }
+        return notifications.filter {
+            $0.recipientUserId == user.id && !$0.isRead && $0.notificationType == .cardPulled
+        }.count
+    }
+
+    /// Calls the Edge Function to send push notifications to all group members (Lyft-style). Fire-and-forget.
+    private func triggerCardPullPush(groupId: UUID, pullerName: String) async {
+        let base = SupabaseConfig.projectURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/functions/v1/send-card-pull-push") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(SupabaseConfig.anonKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = ["groupId": groupId.uuidString, "pullerName": pullerName]
+        request.httpBody = try? JSONEncoder().encode(body)
+        _ = try? await URLSession.shared.data(for: request)
     }
 
     // MARK: - Banner

@@ -255,6 +255,12 @@ struct MediaInsert: Encodable {
     let caption: String?
 }
 
+struct DeviceTokenInsert: Encodable {
+    let user_id: UUID
+    let token: String
+    let platform: String
+}
+
 struct NotificationInsert: Encodable {
     let group_id: UUID
     let recipient_user_id: UUID

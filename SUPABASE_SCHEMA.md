@@ -139,6 +139,17 @@ CREATE TABLE IF NOT EXISTS public.notifications (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Device tokens for push notifications (Lyft-style repeated push until user opens app)
+CREATE TABLE IF NOT EXISTS public.device_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  token TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'ios' CHECK (platform IN ('ios', 'android')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, token)
+);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON public.device_tokens(user_id);
+
 -- Friends (future use)
 CREATE TABLE IF NOT EXISTS public.friendships (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -175,6 +186,7 @@ ALTER TABLE public.media ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vote_cases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.votes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.device_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.friendships ENABLE ROW LEVEL SECURITY;
 
 -- Profiles
@@ -345,6 +357,11 @@ DROP POLICY IF EXISTS "Members can insert notifications" ON public.notifications
 CREATE POLICY "Members can insert notifications" ON public.notifications
   FOR INSERT WITH CHECK (public.is_group_member(auth.uid(), group_id));
 
+-- Device tokens: users manage their own tokens (insert/update/delete). Edge Function uses service_role to read all.
+DROP POLICY IF EXISTS "Users can manage own device tokens" ON public.device_tokens;
+CREATE POLICY "Users can manage own device tokens" ON public.device_tokens
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
 -- 5) FUNCTIONS / TRIGGERS
 CREATE OR REPLACE FUNCTION public.update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -452,6 +469,34 @@ ON CONFLICT (id) DO NOTHING;
 If you get **unique constraint violation on username** (e.g. two backfilled users both got the same fallback), run:  
 `UPDATE public.profiles SET username = 'user_' || REPLACE(LEFT(id::text, 8), '-', '') || '_' || (ROW_NUMBER() OVER (ORDER BY id)::text) WHERE username LIKE 'user_%' AND LENGTH(username) <= 12;`  
 or fix the duplicate in Table Editor.
+
+## Push notifications (Lyft-style: repeat until user opens app)
+
+Run this in the **SQL Editor** to create the `device_tokens` table (required for push):
+
+```sql
+CREATE TABLE IF NOT EXISTS public.device_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  token TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'ios' CHECK (platform IN ('ios', 'android')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, token)
+);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON public.device_tokens(user_id);
+ALTER TABLE public.device_tokens ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own device tokens" ON public.device_tokens;
+CREATE POLICY "Users can manage own device tokens" ON public.device_tokens
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+```
+
+**Lyft-style repeating push:**  
+1. **Deploy the Edge Function** `send-card-pull-push` (in `supabase/functions/send-card-pull-push/`).  
+2. **Set secret** `PUSH_WEBHOOK_URL` to your APNs webhook URL. That endpoint receives `POST` with body `{ tokens: string[], title, body }` and must send each token to Apple APNs (use a small Node/Cloudflare Worker with your .p8 key).  
+3. **Immediate send:** When a user pulls a card, the app calls the function with `{ groupId, pullerName }`; the function sends one push to all group members.  
+4. **Repeating send:** Call the function every 15–30 seconds with `?repeat=1` (e.g. cron-job.org or Supabase cron) so users with unread `cardPulled` notifications get another push until they open the app and mark it read.
+
+**iOS:** Enable Push Notifications in Xcode (Signing & Capabilities). The app registers the device token and saves it to `device_tokens` when signed in.
 
 ## Group invites (invite instead of direct add)
 
