@@ -31,6 +31,7 @@ struct GroupRow: Codable, Hashable {
     var voteThreshold: String
     var voteDurationHours: Int
     var groupPhotoUrl: String?
+    var coverPhotoUrl: String?
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -45,6 +46,7 @@ struct GroupRow: Codable, Hashable {
         case voteThreshold = "vote_threshold"
         case voteDurationHours = "vote_duration_hours"
         case groupPhotoUrl = "group_photo_url"
+        case coverPhotoUrl = "group_cover_photo_url"
         case createdAt = "created_at"
     }
 
@@ -71,6 +73,7 @@ struct GroupRow: Codable, Hashable {
         voteThreshold = try c.decode(String.self, forKey: .voteThreshold)
         voteDurationHours = try c.decode(Int.self, forKey: .voteDurationHours)
         groupPhotoUrl = try c.decodeIfPresent(String.self, forKey: .groupPhotoUrl)
+        coverPhotoUrl = try c.decodeIfPresent(String.self, forKey: .coverPhotoUrl)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
     }
 
@@ -94,6 +97,7 @@ struct GroupRow: Codable, Hashable {
         try c.encode(voteThreshold, forKey: .voteThreshold)
         try c.encode(voteDurationHours, forKey: .voteDurationHours)
         try c.encodeIfPresent(groupPhotoUrl, forKey: .groupPhotoUrl)
+        try c.encodeIfPresent(coverPhotoUrl, forKey: .coverPhotoUrl)
         try c.encode(createdAt, forKey: .createdAt)
     }
 }
@@ -300,6 +304,10 @@ struct CreateGroupInsert: Encodable {
 
 struct GroupPhotoUpdate: Encodable {
     let group_photo_url: String?
+}
+
+struct GroupCoverPhotoUpdate: Encodable {
+    let group_cover_photo_url: String?
 }
 
 // MARK: - UPDATE payloads (Encodable, for .update())

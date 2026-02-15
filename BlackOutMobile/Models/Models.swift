@@ -38,6 +38,7 @@ struct Group: Identifiable, Codable, Hashable {
     var voteThreshold: VoteThreshold
     var voteDurationHours: Int
     var groupPhotoUrl: String?
+    var coverPhotoUrl: String?
     let createdAt: Date
 
     init(
@@ -53,6 +54,7 @@ struct Group: Identifiable, Codable, Hashable {
         voteThreshold: VoteThreshold = .majority,
         voteDurationHours: Int = 12,
         groupPhotoUrl: String? = nil,
+        coverPhotoUrl: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -67,6 +69,7 @@ struct Group: Identifiable, Codable, Hashable {
         self.voteThreshold = voteThreshold
         self.voteDurationHours = voteDurationHours
         self.groupPhotoUrl = groupPhotoUrl
+        self.coverPhotoUrl = coverPhotoUrl
         self.createdAt = createdAt
     }
 }

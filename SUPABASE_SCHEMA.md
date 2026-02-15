@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS public.groups (
   vote_threshold TEXT NOT NULL DEFAULT 'Majority' CHECK (vote_threshold IN ('Majority')),
   vote_duration_hours INTEGER NOT NULL DEFAULT 12,
   group_photo_url TEXT,
+  group_cover_photo_url TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -599,6 +600,17 @@ ALTER TABLE public.friendships DROP CONSTRAINT IF EXISTS friendships_addressee_u
 ALTER TABLE public.friendships ADD CONSTRAINT friendships_addressee_user_id_fkey
   FOREIGN KEY (addressee_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
 ```
+
+## Optional migration: group cover photo
+
+If your `groups` table already exists without the cover column, run:
+
+```sql
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS group_cover_photo_url TEXT;
+```
+
+- **group_photo_url** = circular group avatar (main screen list + profile).
+- **group_cover_photo_url** = rectangular cover image (top of group home, Facebook-style).
 
 ## Setup Notes
 

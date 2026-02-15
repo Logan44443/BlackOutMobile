@@ -39,7 +39,10 @@ class GroupsViewModel: ObservableObject {
             if group != nil {
                 self.newGroupName = ""
                 self.newGroupPhotoData = nil
-                // Store was already refreshed inside createGroup (with new group + photo); push to list then close sheet
+                // If we uploaded a photo, refetch groups so the list gets the group with group_photo_url (avoids stale/cached row)
+                if photoData != nil && !photoUploadFailed {
+                    await self.store.refreshGroups()
+                }
                 self.loadGroups()
                 self.showCreateGroup = false
                 if photoUploadFailed {

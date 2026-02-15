@@ -26,6 +26,7 @@ struct GroupsListView: View {
                 }
                 .onAppear {
                     viewModel.loadGroups()
+                    Task { await store.refreshGroups() }
                 }
                 .task {
                     await store.refreshGroups()
@@ -48,7 +49,7 @@ struct GroupsListView: View {
     private var groupsContent: some View {
         ZStack {
             Color.cardBlack.ignoresSafeArea()
-            if viewModel.groups.isEmpty {
+            if store.groupsForCurrentUser().isEmpty {
                 emptyStateView
             } else {
                 groupsList
@@ -122,13 +123,13 @@ struct GroupsListView: View {
     // MARK: - Groups List
 
     private var groupsList: some View {
-        let sortedGroups = viewModel.groups
+        let sortedGroups = store.groupsForCurrentUser()
             .sorted { $0.group.name.localizedCaseInsensitiveCompare($1.group.name) == .orderedAscending }
         return ScrollView {
             LazyVStack(spacing: 12) {
                 ForEach(sortedGroups) { groupInfo in
                     NavigationLink(value: groupInfo) {
-                        GroupRowView(groupInfo: groupInfo)
+                        GroupRowView(groupInfo: groupInfo, store: store)
                     }
                 }
             }
@@ -177,6 +178,10 @@ struct GroupsListView: View {
 
 struct GroupRowView: View {
     let groupInfo: GroupInfo
+    @ObservedObject var store: DataStore
+
+    /// Always use the live group from the store so the profile photo stays in sync (main list = same as group screen).
+    private var currentGroup: Group? { store.group(for: groupInfo.group.id) ?? groupInfo.group }
 
     var body: some View {
         HStack(spacing: 16) {
@@ -212,7 +217,7 @@ struct GroupRowView: View {
 
     @ViewBuilder
     private var groupIcon: some View {
-        if let urlString = groupInfo.group.groupPhotoUrl, !urlString.isEmpty, let url = URL(string: urlString) {
+        if let urlString = currentGroup?.groupPhotoUrl, !urlString.isEmpty, let url = URL(string: urlString) {
             AsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
@@ -244,7 +249,7 @@ struct GroupRowView: View {
                 .fill(Color.accentPurple.opacity(0.2))
                 .frame(width: 52, height: 52)
 
-            Text(String(groupInfo.group.name.prefix(1)).uppercased())
+            Text(String((currentGroup?.name ?? groupInfo.group.name).prefix(1)).uppercased())
                 .font(.title2.bold())
                 .foregroundColor(.accentPurple)
         }

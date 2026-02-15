@@ -10,8 +10,8 @@ struct GroupHomeView: View {
     @State private var showInviteLinkCopied = false
     @State private var navigateToNight: Night?
     @State private var pullCardDragOffset: CGFloat = 0
-    @State private var groupPhotoItem: PhotosPickerItem?
-    @State private var groupPhotoUploading = false
+    @State private var coverPhotoItem: PhotosPickerItem?
+    @State private var coverPhotoUploading = false
     private let pullCardDragThreshold: CGFloat = 160
 
     init(groupId: UUID) {
@@ -120,9 +120,10 @@ struct GroupHomeView: View {
 
     private var groupHeaderCard: some View {
         VStack(spacing: 16) {
-            // Group photo (with optional change-photo for admins)
+            // Cover photo (rectangular) + group profile circle
             ZStack(alignment: .bottomTrailing) {
-                if let urlString = viewModel.group?.groupPhotoUrl, let url = URL(string: urlString) {
+                // Rectangular cover photo
+                if let urlString = viewModel.group?.coverPhotoUrl, !urlString.isEmpty, let url = URL(string: urlString) {
                     AsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let image):
@@ -139,6 +140,7 @@ struct GroupHomeView: View {
                                 .overlay { ProgressView().tint(.white) }
                         }
                     }
+                    .id(urlString)
                 } else {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(Color.surfaceDark)
@@ -149,38 +151,40 @@ struct GroupHomeView: View {
                                 .foregroundColor(.textSecondary)
                         }
                 }
-                if groupPhotoUploading {
+                if coverPhotoUploading {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(.ultraThinMaterial)
                         .frame(height: 140)
                         .overlay { ProgressView().tint(.white) }
                 }
                 if viewModel.isAdmin {
-                    PhotosPicker(selection: $groupPhotoItem, matching: .images) {
+                    PhotosPicker(selection: $coverPhotoItem, matching: .images) {
                         Image(systemName: "camera.circle.fill")
                             .font(.title2)
                             .foregroundStyle(.white, Color.accentPurple)
                     }
                     .buttonStyle(.plain)
                     .padding(8)
-                    .disabled(groupPhotoUploading)
+                    .disabled(coverPhotoUploading)
                 }
             }
-            .onChange(of: groupPhotoItem) { _, newItem in
+            .onChange(of: coverPhotoItem) { _, newItem in
                 guard let newItem else { return }
                 Task {
                     guard let data = try? await newItem.loadTransferable(type: Data.self) else { return }
-                    await MainActor.run { groupPhotoUploading = true }
-                    _ = await DataStore.shared.uploadGroupPhoto(groupId: groupId, imageData: data)
+                    await MainActor.run { coverPhotoUploading = true }
+                    _ = await DataStore.shared.uploadGroupCoverPhoto(groupId: groupId, imageData: data)
                     await MainActor.run {
-                        groupPhotoUploading = false
-                        groupPhotoItem = nil
+                        coverPhotoUploading = false
+                        coverPhotoItem = nil
                         viewModel.refreshAndLoad()
                     }
                 }
             }
 
-            HStack {
+            // Row: group profile circle (avatar) + Private / Period / Your Cards
+            HStack(alignment: .center, spacing: 12) {
+                groupProfileCircle
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Image(systemName: "lock.fill")
@@ -190,17 +194,13 @@ struct GroupHomeView: View {
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                     }
-
                     if let group = viewModel.group {
                         Text("\(group.periodType.rawValue) Period")
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                     }
                 }
-
                 Spacer()
-
-                // Current user's cards
                 if let membership = viewModel.currentMembership {
                     VStack(spacing: 4) {
                         Text("Your Cards")
@@ -212,6 +212,38 @@ struct GroupHomeView: View {
             }
         }
         .cardStyle()
+    }
+
+    /// Circular group profile photo (same as on My Groups list).
+    @ViewBuilder
+    private var groupProfileCircle: some View {
+        if let urlString = viewModel.group?.groupPhotoUrl, !urlString.isEmpty, let url = URL(string: urlString) {
+            AsyncImage(url: url) { phase in
+                if case .success(let image) = phase {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    groupProfileCirclePlaceholder
+                }
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(Circle())
+            .id(urlString)
+        } else {
+            groupProfileCirclePlaceholder
+        }
+    }
+
+    private var groupProfileCirclePlaceholder: some View {
+        Circle()
+            .fill(Color.accentPurple.opacity(0.2))
+            .frame(width: 44, height: 44)
+            .overlay(
+                Text(String((viewModel.group?.name ?? "G").prefix(1)).uppercased())
+                    .font(.headline)
+                    .foregroundColor(.accentPurple)
+            )
     }
 
     // MARK: - Active Night Banner
@@ -282,7 +314,7 @@ struct GroupHomeView: View {
                             .font(.subheadline.bold())
                             .foregroundColor(.white.opacity(0.95))
                     }
-                    .padding(.bottom, 44)
+                    .padding(.bottom, 20)
                 }
                 .frame(height: cardHeight)
                 .gesture(

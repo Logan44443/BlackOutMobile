@@ -335,6 +335,7 @@ class DataStore: ObservableObject {
                     voteThreshold: .majority,
                     voteDurationHours: row.voteDurationHours,
                     groupPhotoUrl: row.groupPhotoUrl,
+                    coverPhotoUrl: row.coverPhotoUrl,
                     createdAt: row.createdAt
                 )
             }
@@ -371,10 +372,10 @@ class DataStore: ObservableObject {
                 .value
 
             var photoUploadFailed = false
+            var uploadedPhotoURL: String?
             if let imageData = photoData {
-                if await uploadGroupPhoto(groupId: groupRow.id, imageData: imageData) == nil {
-                    photoUploadFailed = true
-                }
+                uploadedPhotoURL = await uploadGroupPhoto(groupId: groupRow.id, imageData: imageData)
+                if uploadedPhotoURL == nil { photoUploadFailed = true }
             }
 
             // Add creator as Admin member.
@@ -391,6 +392,14 @@ class DataStore: ObservableObject {
                 .execute()
 
             await refreshGroupsForCurrentUser()
+            // Patch the new group with the uploaded photo URL so the list shows it immediately (assign new array so @Published fires)
+            if let url = uploadedPhotoURL, let idx = groups.firstIndex(where: { $0.id == groupRow.id }) {
+                var updatedGroups = groups
+                var g = updatedGroups[idx]
+                g.groupPhotoUrl = url
+                updatedGroups[idx] = g
+                groups = updatedGroups
+            }
             return (group(for: groupRow.id), photoUploadFailed)
         } catch {
             debugPrint("createGroup error:", error)
@@ -415,9 +424,48 @@ class DataStore: ObservableObject {
                 .execute()
 
             await refreshGroupsForCurrentUser()
+            // Patch in-memory so list and group home update immediately (assign new array so @Published fires)
+            if let idx = groups.firstIndex(where: { $0.id == groupId }) {
+                var updatedGroups = groups
+                var g = updatedGroups[idx]
+                g.groupPhotoUrl = url
+                updatedGroups[idx] = g
+                groups = updatedGroups
+            }
             return url
         } catch {
             debugPrint("uploadGroupPhoto error:", error)
+            return nil
+        }
+    }
+
+    /// Upload or replace the group cover photo (rectangular, inside group view). Updates group_cover_photo_url.
+    @discardableResult
+    func uploadGroupCoverPhoto(groupId: UUID, imageData: Data) async -> String? {
+        do {
+            let filePath = "groups/\(groupId.uuidString)/cover.jpg"
+            try await supabase.storage
+                .from("media")
+                .upload(filePath, data: imageData, options: FileOptions(contentType: "image/jpeg", upsert: true))
+            let url = storagePublicURL(bucket: "media", path: filePath)
+
+            try await supabase
+                .from("groups")
+                .update(GroupCoverPhotoUpdate(group_cover_photo_url: url))
+                .eq("id", value: groupId)
+                .execute()
+
+            await refreshGroupsForCurrentUser()
+            if let idx = groups.firstIndex(where: { $0.id == groupId }) {
+                var updatedGroups = groups
+                var g = updatedGroups[idx]
+                g.coverPhotoUrl = url
+                updatedGroups[idx] = g
+                groups = updatedGroups
+            }
+            return url
+        } catch {
+            debugPrint("uploadGroupCoverPhoto error:", error)
             return nil
         }
     }
@@ -452,6 +500,7 @@ class DataStore: ObservableObject {
                         voteThreshold: .majority,
                         voteDurationHours: groupRow.voteDurationHours,
                         groupPhotoUrl: groupRow.groupPhotoUrl,
+                        coverPhotoUrl: groupRow.coverPhotoUrl,
                         createdAt: groupRow.createdAt
                     )
                 )
@@ -600,7 +649,7 @@ class DataStore: ObservableObject {
                 .execute()
             await refreshGroupsForCurrentUser()
             await refreshGroupData(groupId: groupId)
-            await markNotificationRead(notificationId)
+            markNotificationRead(notificationId)
             await refreshNotificationsForCurrentUser()
         } catch {
             debugPrint("acceptGroupInvite error:", error)
@@ -613,7 +662,7 @@ class DataStore: ObservableObject {
         guard let notification = notifications.first(where: { $0.id == notificationId }),
               notification.notificationType == .groupInvite,
               notification.recipientUserId == currentUser?.id else { return }
-        await markNotificationRead(notificationId)
+        markNotificationRead(notificationId)
         await refreshNotificationsForCurrentUser()
     }
 

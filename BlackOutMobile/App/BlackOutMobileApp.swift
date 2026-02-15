@@ -27,11 +27,13 @@ struct BlackOutMobileApp: App {
         let generator = UINotificationFeedbackGenerator()
         generator.prepare()
         cardPullVibrationTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { timer in
-            if DataStore.shared.unreadCardPulledCount == 0 {
-                timer.invalidate()
-                return
+            Task { @MainActor in
+                if DataStore.shared.unreadCardPulledCount == 0 {
+                    timer.invalidate()
+                    return
+                }
+                generator.notificationOccurred(.error)
             }
-            generator.notificationOccurred(.error)
         }
         RunLoop.main.add(cardPullVibrationTimer!, forMode: .common)
     }
