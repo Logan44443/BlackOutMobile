@@ -66,13 +66,8 @@ struct GroupHomeView: View {
                 pullCardHalfPeek
             }
         }
-        .alert("Pull Blackout Card?", isPresented: $viewModel.showPullConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Pull Card") {
-                viewModel.pullCard()
-            }
-        } message: {
-            Text("This will notify everyone in the group. You're committing to a night out. Are you sure?")
+        .sheet(isPresented: $viewModel.showPullConfirmation) {
+            pullCardMessageSheet
         }
         .navigationTitle(viewModel.group?.name ?? "Group")
         .navigationBarTitleDisplayMode(.large)
@@ -113,6 +108,48 @@ struct GroupHomeView: View {
         }
         .onAppear {
             viewModel.refreshAndLoad()
+        }
+    }
+
+    // MARK: - Pull Card Message Sheet
+
+    private var pullCardMessageSheet: some View {
+        NavigationStack {
+            ZStack {
+                Color.cardBlack.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 20) {
+                    Text("This will notify everyone in the group. You're committing to a night out.")
+                        .font(.subheadline)
+                        .foregroundColor(.textSecondary)
+                    TextField("Add a message (optional)", text: $viewModel.pullCardMessage, axis: .vertical)
+                        .lineLimit(3...6)
+                        .textFieldStyle(.roundedBorder)
+                        .foregroundColor(.primary)
+                        .autocorrectionDisabled()
+                    Spacer(minLength: 0)
+                }
+                .padding(20)
+            }
+            .navigationTitle("Pull Blackout Card?")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        viewModel.showPullConfirmation = false
+                        viewModel.pullCardMessage = ""
+                    }
+                    .foregroundColor(.accentPurple)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Pull Card") {
+                        viewModel.pullCard()
+                        viewModel.showPullConfirmation = false
+                    }
+                    .fontWeight(.semibold)
+                    .foregroundColor(.accentPurple)
+                }
+            }
         }
     }
 

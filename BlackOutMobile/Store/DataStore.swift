@@ -725,7 +725,8 @@ class DataStore: ObservableObject {
     }
 
     /// Pull a blackout card in this group only. Eligibility is per-group: you must have cards in this group and no active night in this group.
-    func pullCard(in groupId: UUID) async -> PullCardResult {
+    /// Optional message is included in the notification: "(Name) pulled their blackout card: [message]"
+    func pullCard(in groupId: UUID, message: String? = nil) async -> PullCardResult {
         guard isAuthenticated else { return .error("Not signed in.") }
         do {
             let authUser = try await supabase.auth.session.user
@@ -783,12 +784,18 @@ class DataStore: ObservableObject {
                 .value
 
             let pullerName = currentUser?.name ?? "Someone"
+            let notificationMessage: String
+            if let msg = message?.trimmingCharacters(in: .whitespacesAndNewlines), !msg.isEmpty {
+                notificationMessage = "\(pullerName) pulled their blackout card: \(msg)"
+            } else {
+                notificationMessage = "\(pullerName) pulled their blackout card."
+            }
             let inserts = memberIds.map { member in
                 NotificationInsert(
                     group_id: groupId,
                     recipient_user_id: member.userId,
                     title: "BLACKOUT CARD PULLED",
-                    message: "\(pullerName) PULLED THEIR BLACKOUT CARD!",
+                    message: notificationMessage,
                     notification_type: "cardPulled"
                 )
             }

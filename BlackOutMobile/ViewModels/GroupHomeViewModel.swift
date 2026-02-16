@@ -16,6 +16,7 @@ class GroupHomeViewModel: ObservableObject {
     @Published var canPetition = false
     @Published var isAdmin = false
     @Published var showPullConfirmation = false
+    @Published var pullCardMessage = ""
     @Published var errorMessage: String?
 
     private let store = DataStore.shared
@@ -68,11 +69,13 @@ class GroupHomeViewModel: ObservableObject {
     }
 
     func pullCard() {
+        let messageToSend = pullCardMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        pullCardMessage = ""
         Task {
-            let result = await store.pullCard(in: groupId)
+            let result = await store.pullCard(in: groupId, message: messageToSend.isEmpty ? nil : messageToSend)
             switch result {
             case .success:
-                break
+                showPullConfirmation = false
             case .noCardsRemaining:
                 errorMessage = "You have no cards remaining in this group. Wait for a period reset or a successful petition."
             case .activeNightExists:
